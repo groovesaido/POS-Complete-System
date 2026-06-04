@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            Int      @id @default(autoincrement())
+  name          String
+  username      String   @unique
+  email         String   @unique
+  password      String
+  role          String   @default("cashier") // admin or cashier
+  status        String   @default("active") // active or inactive
+  lastLogin     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  transactions  Transaction[]
+  activityLogs  ActivityLog[]
+}
+
+model Category {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products    Product[]
+}
+
+model Product {
+  id            Int      @id @default(autoincrement())
+  name          String
+  sku           String   @unique
+  barcode       String?
+  description   String?
+  costPrice     Float    @default(0)
+  sellingPrice  Float    @default(0)
+  quantity      Int      @default(0)
+  reorderLevel  Int      @default(5)
+  imageUrl      String?
+  categoryId    Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  category           Category            @relation(fields: [categoryId], references: [id])
+  transactionItems   TransactionItem[]
+  inventoryLogs      InventoryLog[]
+}
+
+model Transaction {
+  id              Int      @id @default(autoincrement())
+  receiptNumber   String   @unique
+  invoiceNumber   String   @unique
+  subtotal        Float    @default(0)
+  tax             Float    @default(0)
+  discount        Float    @default(0)
+  total           Float    @default(0)
+  paymentMethod   String   @default("cash") // cash, mpesa, debit_card, credit_card, mixed
+  amountPaid      Float    @default(0)
+  change          Float    @default(0)
+  status          String   @default("completed") // completed, refunded
+  cashierId       Int
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cashier          User              @relation(fields: [cashierId], references: [id])
+  items            TransactionItem[]
+}
+
+model TransactionItem {
+  id            Int      @id @default(autoincrement())
+  transactionId Int
+  productId     Int
+  productName   String
+  quantity      Int
+  unitPrice     Float
+  totalPrice    Float
+  createdAt     DateTime @default(now())
+
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  product       Product     @relation(fields: [productId], references: [id])
+}
+
+model InventoryLog {
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  change      Int      // positive for additions, negative for removals
+  quantity    Int      // quantity after change
+  type        String   // sale, purchase, refund, adjustment
+  reference   String?  // transaction receipt number or note
+  createdAt   DateTime @default(now())
+
+  product     Product  @relation(fields: [productId], references: [id])
+}
+
+model ActivityLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model Setting {
+  id    Int    @id @default(autoincrement())
+  key   String @unique
+  value String
+}
