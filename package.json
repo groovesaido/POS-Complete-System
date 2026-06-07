@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "POS desktop application",
   "author": "Stephen Muiga kiragu",
   "main": "main.js",
@@ -9,7 +9,7 @@
     "frontend": "cd frontend && npm run dev",
     "electron": "electron .",
     "dev": "concurrently \"npm run backend\" \"npm run frontend\" \"wait-on http://localhost:3000 && npm run electron\"",
-    "dist": "cd backend && npm run package && cd ../frontend && npm run build && cd .. && npx electron-builder"
+    "dist": "cd backend && npx prisma migrate reset --force && npx prisma generate && npm run seed && npm run package && cd ../frontend && npm run build && cd .. && npx electron-builder"
   },
   "build": {
     "appId": "com.Bythebuzz.POS",
@@ -17,6 +17,7 @@
     "icon": "public/cash-machine.png",
     "files": [
       "main.js",
+      "preload.js",
       "frontend/dist/**/*",
       "package.json"
     ],
@@ -33,6 +34,13 @@
     "directories": {
       "output": "dist"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "groovesaido",
+        "repo": "POS-Complete-System"
+      }
+    ],
     "win": {
       "target": "nsis"
     }
@@ -44,10 +52,12 @@
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "date-fns": "^4.4.0",
+    "electron-updater": "^6.8.9",
     "express": "^4.21.0",
     "express-rate-limit": "^7.4.1",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "lodash.isequal": "^4.5.0",
     "lucide-react": "^1.17.0",
     "multer": "^1.4.5-lts.1",
     "react-hook-form": "^7.77.0",
@@ -61,7 +71,7 @@
   "devDependencies": {
     "concurrently": "^9.2.1",
     "electron": "^41.7.1",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^24.9.1",
     "nodemon": "^3.1.7",
     "prisma": "^5.22.0",
     "wait-on": "^9.0.10"

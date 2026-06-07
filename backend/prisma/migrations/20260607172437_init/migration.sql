@@ -29,7 +29,8 @@ CREATE TABLE "Product" (
     "barcode" TEXT,
     "description" TEXT,
     "costPrice" REAL NOT NULL DEFAULT 0,
-    "sellingPrice" REAL NOT NULL DEFAULT 0,
+    "retailPrice" REAL NOT NULL DEFAULT 0,
+    "wholesalePrice" REAL NOT NULL DEFAULT 0,
     "quantity" INTEGER NOT NULL DEFAULT 0,
     "reorderLevel" INTEGER NOT NULL DEFAULT 5,
     "imageUrl" TEXT,
@@ -56,6 +57,11 @@ CREATE TABLE "Transaction" (
     "notes" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
+    "cashAmount" REAL,
+    "mpesaAmount" REAL,
+    "mpesaCheckoutRequestId" TEXT,
+    "mpesaPhone" TEXT,
+    "mpesaReceiptCode" TEXT,
     CONSTRAINT "Transaction_cashierId_fkey" FOREIGN KEY ("cashierId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
@@ -63,14 +69,14 @@ CREATE TABLE "Transaction" (
 CREATE TABLE "TransactionItem" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     "transactionId" INTEGER NOT NULL,
-    "productId" INTEGER NOT NULL,
+    "productId" INTEGER,
     "productName" TEXT NOT NULL,
     "quantity" INTEGER NOT NULL,
     "unitPrice" REAL NOT NULL,
     "totalPrice" REAL NOT NULL,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "TransactionItem_transactionId_fkey" FOREIGN KEY ("transactionId") REFERENCES "Transaction" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "TransactionItem_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+    CONSTRAINT "TransactionItem_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "TransactionItem_transactionId_fkey" FOREIGN KEY ("transactionId") REFERENCES "Transaction" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -82,7 +88,7 @@ CREATE TABLE "InventoryLog" (
     "type" TEXT NOT NULL,
     "reference" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "InventoryLog_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+    CONSTRAINT "InventoryLog_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 -- CreateTable

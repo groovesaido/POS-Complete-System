@@ -3,6 +3,14 @@ const { authenticate, authorizeAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
+/** Format a Date as YYYY-MM-DD using local timezone (avoids .toISOString() UTC shift) */
+const toLocalDateStr = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 /** Parse a YYYY-MM-DD string as local-time midnight (avoids UTC interpretation) */
 const parseLocalDate = (dateStr) => {
   if (!dateStr) return null;
@@ -72,12 +80,12 @@ router.get('/weekly-sales', authenticate, authorizeAdmin, async (req, res) => {
     // Group by day
     const dailyData = {};
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const key = d.toISOString().split('T')[0];
+      const key = toLocalDateStr(d);
       dailyData[key] = { date: key, sales: 0, count: 0 };
     }
 
     transactions.forEach(t => {
-      const key = t.createdAt.toISOString().split('T')[0];
+      const key = toLocalDateStr(t.createdAt);
       if (dailyData[key]) {
         dailyData[key].sales += t.total;
         dailyData[key].count += 1;

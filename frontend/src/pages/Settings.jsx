@@ -1,6 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { settingsAPI } from "../services/api";
 import toast from "react-hot-toast";
+
+// ── Preload API type guard ──
+const updater = window.electronUpdater;
 
 export default function Settings() {
   const [settings, setSettings] = useState({
@@ -22,6 +25,13 @@ export default function Settings() {
   const [networkInfo, setNetworkInfo] = useState(null);
   const [networkInfoLoading, setNetworkInfoLoading] = useState(true);
 
+  // ── Update State ──
+  const [appVersion, setAppVersion] = useState("1.0.0");
+  const [updateStatus, setUpdateStatus] = useState("idle"); // idle | checking | available | downloading | downloaded | error | uptodate
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [updateError, setUpdateError] = useState(null);
+
   const [mpesaForm, setMpesaForm] = useState({
     name: "",
     type: "paybill",
@@ -32,6 +42,86 @@ export default function Settings() {
     isDefault: false,
     useSandbox: true,
   });
+
+  const uptodateTimerRef = useRef(null);
+
+  // ── Updater IPC Listeners ──
+  useEffect(() => {
+    if (!updater) return;
+
+    // Get version
+    updater.getVersion().then(setAppVersion).catch(() => {});
+
+    // Listen for events
+    const unsubAvailable = updater.onUpdateAvailable((info) => {
+      setUpdateStatus("available");
+      setUpdateInfo(info);
+      toast.success(
+        `Update v${info.version} available — downloading...`,
+        { duration: 4000 },
+      );
+      // Auto-download in background (electron-updater handles this)
+    });
+
+    const unsubDownloaded = updater.onUpdateDownloaded((info) => {
+      setUpdateStatus("downloaded");
+      setUpdateInfo(info);
+      toast(
+        (t) => (
+          <div className="flex items-center gap-3">
+            <span>
+              Update v{info.version} ready to install!
+            </span>
+            <button
+              onClick={() => {
+                updater.installUpdate();
+                toast.dismiss(t.id);
+              }}
+              className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+            >
+              Restart Now
+            </button>
+          </div>
+        ),
+        { duration: 60000 },
+      );
+    });
+
+    const unsubProgress = updater.onDownloadProgress((progress) => {
+      setUpdateStatus("downloading");
+      setDownloadProgress(progress.percent || 0);
+    });
+
+    const unsubUpToDate = updater.onUpToDate(() => {
+      setUpdateStatus("uptodate");
+      setUpdateError(null);
+      uptodateTimerRef.current = setTimeout(() => setUpdateStatus("idle"), 5000);
+    });
+
+    const unsubError = updater.onUpdateError((message) => {
+      setUpdateStatus("error");
+      setUpdateError(message);
+    });
+
+    return () => {
+      unsubAvailable();
+      unsubDownloaded();
+      unsubProgress();
+      unsubUpToDate();
+      unsubError();
+      if (uptodateTimerRef.current) {
+        clearTimeout(uptodateTimerRef.current);
+        uptodateTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleCheckUpdates = useCallback(() => {
+    if (!updater) return;
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    updater.checkForUpdates();
+  }, []);
 
   useEffect(() => {
     loadSettings();
@@ -538,10 +628,99 @@ export default function Settings() {
         </button>
       </div>
 
+      {/* Auto-Updates Section */}
+      {updater && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-lg">🔄 Updates</h2>
+            <span className="text-xs text-gray-500">v{appVersion}</span>
+          </div>
+
+          {/* Status display */}
+          {updateStatus !== "idle" && (
+            <div className="mb-4">
+              {updateStatus === "checking" && (
+                <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>Checking for updates...</span>
+                </div>
+              )}
+              {updateStatus === "uptodate" && (
+                <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                  <span>✓</span>
+                  <span>You're on the latest version!</span>
+                </div>
+              )}
+              {updateStatus === "available" && (
+                <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+                  <span>📥</span>
+                  <span>Downloading v{updateInfo?.version}...</span>
+                </div>
+              )}
+              {updateStatus === "downloading" && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
+                    <span>⬇️</span>
+                    <span>Downloading update... {Math.round(downloadProgress)}%</span>
+                  </div>
+                  <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${downloadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              {updateStatus === "downloaded" && (
+                <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                  <span>✅</span>
+                  <span>
+                    Update v{updateInfo?.version} ready!{" "}
+                    <button
+                      onClick={() => updater.installUpdate()}
+                      className="underline font-medium hover:text-green-700"
+                    >
+                      Restart now
+                    </button>
+                  </span>
+                </div>
+              )}
+              {updateStatus === "error" && (
+                <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                  <span>⚠️</span>
+                  <span>
+                    Update check failed:{" "}
+                    {updateError || "Unknown error"}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={handleCheckUpdates}
+            disabled={updateStatus === "checking" || updateStatus === "downloading"}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {updateStatus === "checking"
+              ? "Checking..."
+              : "Check for Updates"}
+          </button>
+
+          <p className="text-xs text-gray-500 mt-2">
+            Updates are checked automatically on startup. You can also check
+            manually here.
+          </p>
+        </div>
+      )}
+
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <h2 className="font-semibold text-lg mb-4">System Info</h2>
         <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
-          <p>Version: 1.0.0</p>
+          <p>Version: {appVersion}</p>
           <p>Database: SQLite</p>
           <p>Authentication: JWT + bcrypt</p>
           <div className="border-t border-gray-200 dark:border-gray-700 pt-2 mt-2">

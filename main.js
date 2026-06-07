@@ -1,8 +1,9 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const { spawn, execSync } = require("child_process");
 const http = require("http");
 const fs = require("fs");
+const { autoUpdater } = require("electron-updater");
 
 let backendProcess = null;
 const isDev = !app.isPackaged;
@@ -22,6 +23,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 
@@ -151,9 +153,89 @@ process.on("SIGTERM", () => {
   app.quit();
 });
 
+// ── Auto Updater ──
+
+// Log auto-updater events to console
+autoUpdater.logger = {
+  info: (msg) => console.log("[AutoUpdater]", msg),
+  warn: (msg) => console.warn("[AutoUpdater]", msg),
+  error: (msg) => console.error("[AutoUpdater]", msg),
+};
+
+// Disable auto-download so we can track progress and notify the user
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+
+// Event: update available
+autoUpdater.on("update-available", (info) => {
+  console.log("[AutoUpdater] Update available:", info.version);
+  // Forward to all windows
+  BrowserWindow.getAllWindows().forEach((win) => {
+    win.webContents.send("update-available", info);
+  });
+});
+
+// Event: no update available
+autoUpdater.on("update-not-available", (info) => {
+  console.log("[AutoUpdater] Already up to date:", info.version);
+  BrowserWindow.getAllWindows().forEach((win) => {
+    win.webContents.send("up-to-date", info);
+  });
+});
+
+// Event: download progress
+autoUpdater.on("download-progress", (progress) => {
+  BrowserWindow.getAllWindows().forEach((win) => {
+    win.webContents.send("download-progress", progress);
+  });
+});
+
+// Event: update downloaded (ready to install)
+autoUpdater.on("update-downloaded", (info) => {
+  console.log("[AutoUpdater] Update downloaded:", info.version);
+  BrowserWindow.getAllWindows().forEach((win) => {
+    win.webContents.send("update-downloaded", info);
+  });
+});
+
+// Event: error
+autoUpdater.on("error", (err) => {
+  console.error("[AutoUpdater] Error:", err.message);
+  BrowserWindow.getAllWindows().forEach((win) => {
+    win.webContents.send("update-error", err.message);
+  });
+});
+
+// ── IPC Handlers ──
+
+ipcMain.on("check-for-updates", () => {
+  console.log("[IPC] Manual update check requested");
+  autoUpdater.checkForUpdates().catch((err) => {
+    console.error("[AutoUpdater] Check failed:", err.message);
+  });
+});
+
+ipcMain.on("install-update", () => {
+  console.log("[IPC] Installing update...");
+  autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle("get-app-version", () => {
+  return app.getVersion();
+});
+
 app.whenReady().then(() => {
   const loader = createLoadingWindow();
   startBackend(loader);
+
+  // Auto-check for updates on startup (only in production)
+  if (!isDev) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((err) => {
+        console.error("[AutoUpdater] Initial check failed:", err.message);
+      });
+    }, 5000); // Check 5 seconds after startup to let the app settle
+  }
 });
 
 app.on("window-all-closed", () => {

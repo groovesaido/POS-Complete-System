@@ -3,6 +3,14 @@ const { authenticate, authorizeAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
+/** Format a Date as YYYY-MM-DD using local timezone (avoids .toISOString() UTC shift) */
+const toLocalDateStr = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
   try {
     const prisma = req.app.locals.prisma;
@@ -128,7 +136,7 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
         t => t.createdAt >= date && t.createdAt <= end
       );
       dailySales.push({
-        date: date.toISOString().split('T')[0],
+        date: toLocalDateStr(date),
         dayName: date.toLocaleDateString('en-US', { weekday: 'short' }),
         sales: dayTransactions.reduce((sum, t) => sum + t.total, 0),
         count: dayTransactions.length,
@@ -167,7 +175,7 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
       );
       return {
         day: name,
-        fullDate: dayDate.toISOString().split('T')[0],
+        fullDate: toLocalDateStr(dayDate),
         sales: dayTxns.reduce((sum, t) => sum + t.total, 0),
         count: dayTxns.length,
       };
@@ -232,7 +240,7 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
         hours[hour] = (hours[hour] || 0) + 1;
       });
       peakHours.push({
-        date: date.toISOString().split('T')[0],
+        date: toLocalDateStr(date),
         dayName: date.toLocaleDateString('en-US', { weekday: 'short' }),
         hours,
       });
