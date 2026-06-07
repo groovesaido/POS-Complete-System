@@ -3,12 +3,26 @@ const { authenticate, authorizeAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
+/** Parse a YYYY-MM-DD string as local-time midnight (avoids UTC interpretation) */
+const parseLocalDate = (dateStr) => {
+  if (!dateStr) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+
+/** Parse a YYYY-MM-DD string as local-time end-of-day (23:59:59.999) */
+const parseLocalEndDate = (dateStr) => {
+  if (!dateStr) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d, 23, 59, 59, 999);
+};
+
 // Get daily sales report
 router.get('/daily-sales', authenticate, authorizeAdmin, async (req, res) => {
   try {
     const prisma = req.app.locals.prisma;
     const { date } = req.query;
-    const startDate = date ? new Date(date) : new Date();
+    const startDate = date ? parseLocalDate(date) : new Date();
     startDate.setHours(0, 0, 0, 0);
     const endDate = new Date(startDate);
     endDate.setHours(23, 59, 59, 999);
@@ -45,9 +59,9 @@ router.get('/weekly-sales', authenticate, authorizeAdmin, async (req, res) => {
     const prisma = req.app.locals.prisma;
     const { startDate, endDate } = req.query;
 
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const start = startDate ? parseLocalDate(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     start.setHours(0, 0, 0, 0);
-    const end = endDate ? new Date(endDate) : new Date();
+    const end = endDate ? parseLocalEndDate(endDate) : new Date();
     end.setHours(23, 59, 59, 999);
 
     const transactions = await prisma.transaction.findMany({
@@ -128,8 +142,8 @@ router.get('/product-sales', authenticate, authorizeAdmin, async (req, res) => {
     const where = { status: 'completed' };
     if (startDate || endDate) {
       where.createdAt = {};
-      if (startDate) where.createdAt.gte = new Date(startDate);
-      if (endDate) where.createdAt.lte = new Date(endDate + 'T23:59:59.999Z');
+      if (startDate) where.createdAt.gte = parseLocalDate(startDate);
+      if (endDate) where.createdAt.lte = parseLocalEndDate(endDate);
     }
 
     const transactions = await prisma.transaction.findMany({
@@ -168,7 +182,7 @@ router.get('/inventory', authenticate, authorizeAdmin, async (req, res) => {
       lowStock: products.filter(p => p.quantity <= p.reorderLevel).length,
       outOfStock: products.filter(p => p.quantity === 0).length,
       totalValue: products.reduce((sum, p) => sum + p.costPrice * p.quantity, 0),
-      totalRetailValue: products.reduce((sum, p) => sum + p.sellingPrice * p.quantity, 0),
+      totalRetailValue: products.reduce((sum, p) => sum + p.retailPrice * p.quantity, 0),
       products: products.map(p => ({
         ...p,
         stockStatus: p.quantity === 0 ? 'out_of_stock' : p.quantity <= p.reorderLevel ? 'low' : 'ok',
@@ -190,8 +204,8 @@ router.get('/cashier-performance', authenticate, authorizeAdmin, async (req, res
     const where = { status: 'completed' };
     if (startDate || endDate) {
       where.createdAt = {};
-      if (startDate) where.createdAt.gte = new Date(startDate);
-      if (endDate) where.createdAt.lte = new Date(endDate + 'T23:59:59.999Z');
+      if (startDate) where.createdAt.gte = parseLocalDate(startDate);
+      if (endDate) where.createdAt.lte = parseLocalEndDate(endDate);
     }
 
     const cashiers = await prisma.user.findMany({
@@ -232,8 +246,8 @@ router.get('/profit-loss', authenticate, authorizeAdmin, async (req, res) => {
     const where = { status: 'completed' };
     if (startDate || endDate) {
       where.createdAt = {};
-      if (startDate) where.createdAt.gte = new Date(startDate);
-      if (endDate) where.createdAt.lte = new Date(endDate + 'T23:59:59.999Z');
+      if (startDate) where.createdAt.gte = parseLocalDate(startDate);
+      if (endDate) where.createdAt.lte = parseLocalEndDate(endDate);
     }
 
     const transactions = await prisma.transaction.findMany({
@@ -260,7 +274,7 @@ router.get('/profit-loss', authenticate, authorizeAdmin, async (req, res) => {
     }
 
     const grossProfit = totalRevenue - totalCost;
-    const netProfit = grossProfit - totalTax + totalDiscount;
+    const netProfit = totalRevenue - totalCost - totalDiscount;
 
     res.json({
       period: { startDate, endDate },

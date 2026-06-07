@@ -1,0 +1,5 @@
+
+> pos-backend@1.0.0 start
+> node src/index.js
+
+POS Backend running on port 5000

@@ -23,7 +23,7 @@ function generateInvoiceNumber() {
 router.post('/', authenticate, async (req, res) => {
   try {
     const prisma = req.app.locals.prisma;
-    const { items, payments, discount = 0, tax = 0, notes } = req.body;
+    const { items, payments, discount = 0, tax = 0, notes, mpesaCheckoutRequestId, mpesaPhone, mpesaAmount, cashAmount } = req.body;
 
     if (!items || items.length === 0) {
       return res.status(400).json({ error: 'Cart is empty.' });
@@ -42,7 +42,8 @@ router.post('/', authenticate, async (req, res) => {
         return res.status(400).json({ error: `Insufficient stock for ${product.name}. Available: ${product.quantity}` });
       }
 
-      const unitPrice = product.sellingPrice;
+      // Use the appropriate price based on pricing type (per item)
+      const unitPrice = item.pricingType === 'wholesale' ? product.wholesalePrice : product.retailPrice;
       const totalPrice = unitPrice * item.quantity;
       subtotal += totalPrice;
 
@@ -62,6 +63,24 @@ router.post('/', authenticate, async (req, res) => {
     const change = Math.max(0, amountPaid - total);
     const paymentMethod = payments?.[0]?.method || 'cash';
 
+    // Detect split M-Pesa + cash payment (mpesaAmount < total)
+    const isMpesa = paymentMethod === 'mpesa';
+    const parsedMpesaAmount = mpesaAmount ? parseFloat(mpesaAmount) : null;
+    const parsedCashAmount = cashAmount ? parseFloat(cashAmount) : null;
+    const isSplitPayment = isMpesa && parsedMpesaAmount !== null && parsedMpesaAmount < total;
+
+    // Determine initial status:
+    // - Full M-Pesa (mpesaAmount = total): pending until callback
+    // - Split payment (mpesaAmount < total): completed immediately (cash collected)
+    // - Cash/card: completed immediately
+    const initialStatus = isSplitPayment ? 'completed' : (isMpesa ? 'pending_mpesa' : 'completed');
+
+    // Build notes with split payment info if applicable
+    let transactionNotes = notes || '';
+    if (isSplitPayment && parsedMpesaAmount !== null && parsedCashAmount !== null) {
+      transactionNotes = `Split payment: M-Pesa KSh ${parsedMpesaAmount.toFixed(2)} + Cash KSh ${parsedCashAmount.toFixed(2)}${notes ? ' | ' + notes : ''}`;
+    }
+
     // Create transaction with items
     const transaction = await prisma.transaction.create({
       data: {
@@ -71,12 +90,16 @@ router.post('/', authenticate, async (req, res) => {
         tax: taxAmount,
         discount: discountAmount,
         total,
-        paymentMethod,
-        amountPaid,
-        change,
-        status: 'completed',
+        paymentMethod: isSplitPayment ? 'mixed' : paymentMethod,
+        amountPaid: isSplitPayment ? total : amountPaid,
+        change: isSplitPayment ? 0 : change,
+        status: initialStatus,
+        mpesaCheckoutRequestId: isMpesa ? mpesaCheckoutRequestId : null,
+        mpesaPhone: isMpesa ? mpesaPhone : null,
+        mpesaAmount: parsedMpesaAmount || null,
+        cashAmount: isSplitPayment ? parsedCashAmount : null,
         cashierId: req.user.id,
-        notes,
+        notes: transactionNotes,
         items: {
           create: transactionItems,
         },
@@ -87,31 +110,38 @@ router.post('/', authenticate, async (req, res) => {
       },
     });
 
-    // Update inventory and create logs
-    for (const item of transactionItems) {
-      const product = await prisma.product.findUnique({ where: { id: item.productId } });
-      await prisma.product.update({
-        where: { id: item.productId },
-        data: { quantity: { decrement: item.quantity } },
-      });
+    // For cash/card and split payments - decrement inventory immediately
+    // For full M-Pesa - decrement inventory only when callback confirms
+    const shouldDeductInventory = !isMpesa || isSplitPayment;
+    if (shouldDeductInventory) {
+      for (const item of transactionItems) {
+        const product = await prisma.product.findUnique({ where: { id: item.productId } });
+        await prisma.product.update({
+          where: { id: item.productId },
+          data: { quantity: { decrement: item.quantity } },
+        });
 
-      await prisma.inventoryLog.create({
-        data: {
-          productId: item.productId,
-          change: -item.quantity,
-          quantity: product.quantity - item.quantity,
-          type: 'sale',
-          reference: transaction.receiptNumber,
-        },
-      });
+        await prisma.inventoryLog.create({
+          data: {
+            productId: item.productId,
+            change: -item.quantity,
+            quantity: product.quantity - item.quantity,
+            type: 'sale',
+            reference: transaction.receiptNumber,
+          },
+        });
+      }
     }
 
     // Log activity
+    const statusSuffix = isSplitPayment
+      ? ' (M-Pesa + Cash split)'
+      : isMpesa ? ' (Pending M-Pesa)' : '';
     await prisma.activityLog.create({
       data: {
         userId: req.user.id,
         action: 'CREATE_TRANSACTION',
-        details: `Transaction ${transaction.receiptNumber} created - Total: ${total}`,
+        details: `Transaction ${transaction.receiptNumber} created - Total: ${total}${statusSuffix}`,
       },
     });
 
@@ -126,7 +156,7 @@ router.post('/', authenticate, async (req, res) => {
 router.get('/', authenticate, async (req, res) => {
   try {
     const prisma = req.app.locals.prisma;
-    const { search, startDate, endDate, cashierId, page = 1, limit = 20 } = req.query;
+    const { search, startDate, endDate, cashierId, status, page = 1, limit = 20 } = req.query;
 
     const where = {};
 
@@ -143,6 +173,9 @@ router.get('/', authenticate, async (req, res) => {
     }
     if (cashierId) {
       where.cashierId = parseInt(cashierId);
+    }
+    if (status) {
+      where.status = status;
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -195,6 +228,176 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
+// Update a pending transaction (edit items, notes, etc.)
+router.patch('/:id', authenticate, async (req, res) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const id = parseInt(req.params.id);
+    const { items, notes, discount, tax, paymentMethod } = req.body;
+
+    const transaction = await prisma.transaction.findUnique({
+      where: { id },
+      include: { items: true },
+    });
+
+    if (!transaction) return res.status(404).json({ error: 'Transaction not found.' });
+    if (transaction.status !== 'pending_mpesa') {
+      return res.status(400).json({ error: 'Only pending M-Pesa transactions can be edited.' });
+    }
+
+    // If items are provided, recalculate and update
+    let subtotal = transaction.subtotal;
+    let taxAmount = tax !== undefined ? parseFloat(tax) : transaction.tax;
+    let discountAmount = discount !== undefined ? parseFloat(discount) : transaction.discount;
+
+    if (items && items.length > 0) {
+      // Delete old items
+      await prisma.transactionItem.deleteMany({ where: { transactionId: id } });
+
+      // Recalculate with new items
+      subtotal = 0;
+      const transactionItems = [];
+
+      for (const item of items) {
+        const product = await prisma.product.findUnique({ where: { id: item.productId } });
+        if (!product) {
+          return res.status(400).json({ error: `Product ID ${item.productId} not found.` });
+        }
+
+        const unitPrice = item.pricingType === 'wholesale' ? product.wholesalePrice : product.retailPrice;
+        const totalPrice = unitPrice * item.quantity;
+        subtotal += totalPrice;
+
+        transactionItems.push({
+          productId: product.id,
+          productName: product.name,
+          quantity: item.quantity,
+          unitPrice,
+          totalPrice,
+        });
+      }
+
+      // Recreate items
+      await prisma.transactionItem.createMany({
+        data: transactionItems.map(item => ({
+          ...item,
+          transactionId: id,
+        })),
+      });
+    }
+
+    const total = subtotal + taxAmount - discountAmount;
+
+    const updated = await prisma.transaction.update({
+      where: { id },
+      data: {
+        subtotal,
+        tax: taxAmount,
+        discount: discountAmount,
+        total,
+        ...(paymentMethod ? { paymentMethod } : {}),
+        ...(notes !== undefined ? { notes } : {}),
+      },
+      include: {
+        items: true,
+        cashier: { select: { id: true, name: true, username: true } },
+      },
+    });
+
+    // Log activity
+    await prisma.activityLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'UPDATE_PENDING_TRANSACTION',
+        details: `Updated pending transaction #${transaction.receiptNumber} - New total: ${subtotal}`,
+      },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Update transaction error:', error);
+    res.status(500).json({ error: 'Failed to update transaction.' });
+  }
+});
+
+// Manually complete a pending M-Pesa transaction (e.g., customer paid cash instead)
+router.post('/:id/complete', authenticate, async (req, res) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const id = parseInt(req.params.id);
+    const { amountPaid, paymentMethod, notes } = req.body;
+
+    const transaction = await prisma.transaction.findUnique({
+      where: { id },
+      include: { items: true },
+    });
+
+    if (!transaction) return res.status(404).json({ error: 'Transaction not found.' });
+    if (transaction.status !== 'pending_mpesa') {
+      return res.status(400).json({ error: 'Transaction is not pending M-Pesa.' });
+    }
+
+    const finalPaymentMethod = paymentMethod || transaction.paymentMethod;
+    const finalAmountPaid = parseFloat(amountPaid) || transaction.total;
+    const change = Math.max(0, finalAmountPaid - transaction.total);
+
+    // Deduct inventory since M-Pesa didn't go through callback
+    for (const item of transaction.items) {
+      const product = await prisma.product.findUnique({ where: { id: item.productId } });
+      if (product) {
+        // Check stock is still available
+        if (product.quantity < item.quantity) {
+          return res.status(400).json({
+            error: `Insufficient stock for ${item.productName}. Available: ${product.quantity}, needed: ${item.quantity}`,
+          });
+        }
+        await prisma.product.update({
+          where: { id: item.productId },
+          data: { quantity: { decrement: item.quantity } },
+        });
+
+        await prisma.inventoryLog.create({
+          data: {
+            productId: item.productId,
+            change: -item.quantity,
+            quantity: product.quantity - item.quantity,
+            type: 'sale',
+            reference: transaction.receiptNumber,
+          },
+        });
+      }
+    }
+
+    const updated = await prisma.transaction.update({
+      where: { id },
+      data: {
+        status: 'completed',
+        amountPaid: finalAmountPaid,
+        change,
+        paymentMethod: finalPaymentMethod,
+        ...(notes ? { notes: transaction.notes ? `${transaction.notes}; ${notes}` : notes } : {}),
+      },
+      include: {
+        items: true,
+        cashier: { select: { id: true, name: true, username: true } },
+      },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'COMPLETE_PENDING_TRANSACTION',
+        details: `Manually completed pending transaction #${transaction.receiptNumber} as ${finalPaymentMethod}`,
+      },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Complete transaction error:', error);
+    res.status(500).json({ error: 'Failed to complete transaction.' });
+  }
+});
+
 // Refund transaction
 router.post('/:id/refund', authenticate, authorizeAdmin, async (req, res) => {
   try {
@@ -208,6 +411,7 @@ router.post('/:id/refund', authenticate, authorizeAdmin, async (req, res) => {
 
     if (!transaction) return res.status(404).json({ error: 'Transaction not found.' });
     if (transaction.status === 'refunded') return res.status(400).json({ error: 'Transaction already refunded.' });
+    if (transaction.status !== 'completed') return res.status(400).json({ error: 'Only completed transactions can be refunded.' });
 
     // Restore inventory
     for (const item of transaction.items) {

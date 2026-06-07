@@ -3,8 +3,10 @@
   "version": "1.0.0",
   "description": "Point of Sale Backend API",
   "main": "src/index.js",
+  "bin": "src/index.js",
   "prisma": {
-    "seed": "node prisma/seed.js"
+    "seed": "node prisma/seed.js",
+    "bin": "src/index.js"
   },
   "scripts": {
     "start": "node src/index.js",
@@ -12,7 +14,19 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:push": "prisma db push",
-    "seed": "node prisma/seed.js"
+    "seed": "node prisma/seed.js",
+    "package": "pkg . --target node18-win-x64 --output ../resources/backend.exe"
+  },
+  "pkg": {
+    "assets": [
+      "prisma/**/*",
+      "src/**/*",
+      "node_modules/.prisma/**/*",
+      "node_modules/@prisma/client/**/*"
+    ],
+    "entries": [
+      "src/index.js"
+    ]
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -23,11 +37,11 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
-    "uuid": "^10.0.0",
-    "xss-clean": "^0.1.4"
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.7",
+    "pkg": "^5.8.1",
     "prisma": "^5.22.0"
   }
 }

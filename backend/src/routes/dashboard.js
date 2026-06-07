@@ -13,6 +13,29 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
     const weekStart = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
+    // Optional date filter for charts (category sales & top products)
+    // Parse date strings as local timezone, not UTC
+    let chartStartDate = null;
+    if (req.query.chartStartDate) {
+      const [y, m, d] = req.query.chartStartDate.split('-').map(Number);
+      chartStartDate = new Date(y, m - 1, d);
+    }
+    let chartEndDate = null;
+    if (req.query.chartEndDate) {
+      const [y, m, d] = req.query.chartEndDate.split('-').map(Number);
+      chartEndDate = new Date(y, m - 1, d, 23, 59, 59, 999);
+    }
+
+    // Build a date filter for chart-related queries if provided
+    const chartDateFilter = (chartStartDate || chartEndDate)
+      ? {
+          createdAt: {
+            ...(chartStartDate ? { gte: chartStartDate } : {}),
+            ...(chartEndDate ? { lte: chartEndDate } : {}),
+          },
+        }
+      : null;
+
     // Run all queries in parallel
     const [
       todayTransactions,
@@ -59,21 +82,31 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
       take: 10,
     });
 
-    // Top selling products
+    // Build transaction filter for chart queries
+    const chartTransactionFilter = chartDateFilter
+      ? { ...chartDateFilter, status: 'completed' }
+      : { status: 'completed' };
+
+    // Top selling products (filtered by chart date if provided)
     const topProducts = await prisma.transactionItem.groupBy({
       by: ['productName'],
       _sum: { quantity: true, totalPrice: true },
+      where: chartDateFilter ? {
+        transaction: chartTransactionFilter,
+      } : undefined,
       orderBy: { _sum: { quantity: 'desc' } },
       take: 10,
     });
 
-    // Sales by category
+    // Sales by category (filtered by chart date if provided)
     const categorySales = await prisma.category.findMany({
       include: {
         products: {
           include: {
             transactionItems: {
-              where: { transaction: { status: 'completed' } },
+              where: {
+                transaction: chartTransactionFilter,
+              },
             },
           },
         },
@@ -96,16 +129,114 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
       );
       dailySales.push({
         date: date.toISOString().split('T')[0],
+        dayName: date.toLocaleDateString('en-US', { weekday: 'short' }),
         sales: dayTransactions.reduce((sum, t) => sum + t.total, 0),
         count: dayTransactions.length,
       });
     }
+
+    // Hourly sales for today (daily hours view)
+    const hourlySales = [];
+    for (let h = 0; h < 24; h++) {
+      const hourTransactions = todayTransactions.filter(t => {
+        const hour = new Date(t.createdAt).getHours();
+        return hour === h;
+      });
+      hourlySales.push({
+        hour: h,
+        label: h === 0 ? '12AM' : h < 12 ? `${h}AM` : h === 12 ? '12PM' : `${h - 12}PM`,
+        sales: hourTransactions.reduce((sum, t) => sum + t.total, 0),
+        count: hourTransactions.length,
+      });
+    }
+
+    // Weekly sales by day of week (current week: Mon-Sun)
+    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const monday = new Date(todayStart.getTime() + mondayOffset * 24 * 60 * 60 * 1000);
+    const weekEnd = new Date(monday.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
+    const weekByDayTransactions = allTransactions.filter(
+      t => t.createdAt >= monday && t.createdAt <= weekEnd
+    );
+    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const weekdaySales = dayNames.map((name, index) => {
+      const dayDate = new Date(monday.getTime() + index * 24 * 60 * 60 * 1000);
+      const dayEnd = new Date(dayDate.getTime() + 24 * 60 * 60 * 1000 - 1);
+      const dayTxns = weekByDayTransactions.filter(
+        t => t.createdAt >= dayDate && t.createdAt <= dayEnd
+      );
+      return {
+        day: name,
+        fullDate: dayDate.toISOString().split('T')[0],
+        sales: dayTxns.reduce((sum, t) => sum + t.total, 0),
+        count: dayTxns.length,
+      };
+    });
+
+    // Monthly sales by week (week 1-4)
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    const monthWeekSales = [];
+    for (let w = 0; w < 4; w++) {
+      const weekStartDate = new Date(monthStart.getTime() + w * 7 * 24 * 60 * 60 * 1000);
+      const weekEndDate = new Date(Math.min(weekStartDate.getTime() + 7 * 24 * 60 * 60 * 1000 - 1, monthEnd.getTime()));
+      const weekTxns = monthTransactions.filter(
+        t => t.createdAt >= weekStartDate && t.createdAt <= weekEndDate
+      );
+      monthWeekSales.push({
+        week: `Week ${w + 1}`,
+        sales: weekTxns.reduce((sum, t) => sum + t.total, 0),
+        count: weekTxns.length,
+      });
+    }
+
+    // Yearly sales by month
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+    const yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+    const yearTransactions = allTransactions.filter(
+      t => t.createdAt >= yearStart && t.createdAt <= yearEnd
+    );
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const yearlySales = monthNames.map((name, index) => {
+      const monthStartDate = new Date(now.getFullYear(), index, 1);
+      const monthEndDate = new Date(now.getFullYear(), index + 1, 0, 23, 59, 59, 999);
+      const monthTxns = yearTransactions.filter(
+        t => t.createdAt >= monthStartDate && t.createdAt <= monthEndDate
+      );
+      return {
+        month: name,
+        sales: monthTxns.reduce((sum, t) => sum + t.total, 0),
+        count: monthTxns.length,
+      };
+    });
 
     // Payment method distribution
     const paymentMethods = {};
     allTransactions.forEach(t => {
       paymentMethods[t.paymentMethod] = (paymentMethods[t.paymentMethod] || 0) + t.total;
     });
+
+    // Peak hours - transactions grouped by hour for last 7 days
+    const peakHours = [];
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date(todayStart.getTime() - i * 24 * 60 * 60 * 1000);
+      const end = new Date(date.getTime() + 24 * 60 * 60 * 1000 - 1);
+      const dayTransactions = allTransactions.filter(
+        t => t.createdAt >= date && t.createdAt <= end
+      );
+      const hours = {};
+      for (let h = 0; h < 24; h++) {
+        hours[h] = 0;
+      }
+      dayTransactions.forEach(t => {
+        const hour = new Date(t.createdAt).getHours();
+        hours[hour] = (hours[hour] || 0) + 1;
+      });
+      peakHours.push({
+        date: date.toISOString().split('T')[0],
+        dayName: date.toLocaleDateString('en-US', { weekday: 'short' }),
+        hours,
+      });
+    }
 
     res.json({
       summary: {
@@ -120,6 +251,10 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
         totalCategories,
       },
       dailySales,
+      hourlySales,
+      weekdaySales,
+      monthWeekSales: monthWeekSales,
+      yearlySales,
       topProducts: topProducts.map(p => ({
         name: p.productName,
         quantity: p._sum.quantity,
@@ -131,6 +266,7 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
         amount,
       })),
       recentTransactions,
+      peakHours,
     });
   } catch (error) {
     console.error('Dashboard stats error:', error);

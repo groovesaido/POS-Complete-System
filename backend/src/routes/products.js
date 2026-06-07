@@ -67,16 +67,17 @@ router.get('/:id', authenticate, async (req, res) => {
 router.post('/', authenticate, authorizeAdmin, async (req, res) => {
   try {
     const prisma = req.app.locals.prisma;
-    const { name, sku, barcode, description, costPrice, sellingPrice, quantity, reorderLevel, categoryId } = req.body;
+    const { name, sku, barcode, description, costPrice, retailPrice, wholesalePrice, quantity, reorderLevel, categoryId, imageUrl } = req.body;
 
     const existing = await prisma.product.findUnique({ where: { sku } });
     if (existing) return res.status(400).json({ error: 'Product with this SKU already exists.' });
 
     const product = await prisma.product.create({
       data: {
-        name, sku, barcode, description,
+        name, sku, barcode, description, imageUrl,
         costPrice: parseFloat(costPrice) || 0,
-        sellingPrice: parseFloat(sellingPrice) || 0,
+        retailPrice: parseFloat(retailPrice) || 0,
+        wholesalePrice: parseFloat(wholesalePrice) || 0,
         quantity: parseInt(quantity) || 0,
         reorderLevel: parseInt(reorderLevel) || 5,
         categoryId: parseInt(categoryId),
@@ -101,14 +102,15 @@ router.put('/:id', authenticate, authorizeAdmin, async (req, res) => {
   try {
     const prisma = req.app.locals.prisma;
     const id = parseInt(req.params.id);
-    const { name, sku, barcode, description, costPrice, sellingPrice, quantity, reorderLevel, categoryId } = req.body;
+    const { name, sku, barcode, description, costPrice, retailPrice, wholesalePrice, quantity, reorderLevel, categoryId, imageUrl } = req.body;
 
     const product = await prisma.product.update({
       where: { id },
       data: {
-        name, sku, barcode, description,
+        name, sku, barcode, description, imageUrl,
         costPrice: parseFloat(costPrice),
-        sellingPrice: parseFloat(sellingPrice),
+        retailPrice: parseFloat(retailPrice),
+        wholesalePrice: parseFloat(wholesalePrice),
         quantity: parseInt(quantity),
         reorderLevel: parseInt(reorderLevel),
         categoryId: parseInt(categoryId),
@@ -143,7 +145,55 @@ router.delete('/:id', authenticate, authorizeAdmin, async (req, res) => {
 
     res.json({ message: 'Product deleted successfully.' });
   } catch (error) {
+    console.error('Delete product error:', error);
     res.status(500).json({ error: 'Failed to delete product.' });
+  }
+});
+
+// Add stock to product (increment quantity)
+router.post('/:id/add-stock', authenticate, authorizeAdmin, async (req, res) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const id = parseInt(req.params.id);
+    const { quantity } = req.body;
+
+    if (!quantity || parseInt(quantity) <= 0) {
+      return res.status(400).json({ error: 'Quantity must be a positive number.' });
+    }
+
+    const product = await prisma.product.findUnique({ where: { id } });
+    if (!product) return res.status(404).json({ error: 'Product not found.' });
+
+    const addQty = parseInt(quantity);
+    const updated = await prisma.product.update({
+      where: { id },
+      data: { quantity: { increment: addQty } },
+      include: { category: true },
+    });
+
+    // Log inventory change
+    await prisma.inventoryLog.create({
+      data: {
+        productId: id,
+        change: addQty,
+        quantity: updated.quantity,
+        type: 'restock',
+        reference: `Manual restock by ${req.user.name}`,
+      },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'ADD_STOCK',
+        details: `Added ${addQty} units to product ${product.name}. New quantity: ${updated.quantity}`,
+      },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Add stock error:', error);
+    res.status(500).json({ error: 'Failed to add stock.' });
   }
 });
 

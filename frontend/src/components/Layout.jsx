@@ -2,8 +2,6 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { Toaster } from 'react-hot-toast';
-
 const adminNavItems = [
   { path: '/dashboard', label: 'Dashboard', icon: '📊' },
   { path: '/pos', label: 'POS', icon: '💳' },
@@ -36,7 +34,6 @@ export default function Layout({ children }) {
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
-      <Toaster position="top-right" />
       
       {/* Mobile overlay */}
       {sidebarOpen && (
