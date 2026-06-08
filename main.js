@@ -85,6 +85,7 @@ function startBackend(loader) {
   backendProcess = spawn(backendPath, [], {
     detached: false,
     stdio: ["ignore", out, err],
+    windowsHide: true, // Prevent terminal window from showing
     env: {
       ...process.env,
       NODE_ENV: "production",

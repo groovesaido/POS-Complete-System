@@ -1,14 +1,18 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
-import { useTheme } from '../contexts/ThemeContext';
-import toast from 'react-hot-toast';
-import { FiEye, FiEyeOff } from 'react-icons/fi';
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../contexts/AuthContext";
+import { useTheme } from "../contexts/ThemeContext";
+import toast from "react-hot-toast";
+import { FiEye, FiEyeOff } from "react-icons/fi";
 
 export default function Login() {
-  const [username, setUsername] = useState(() => localStorage.getItem('rememberedUser') || '');
-  const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(!!localStorage.getItem('rememberedUser'));
+  const [username, setUsername] = useState(
+    () => localStorage.getItem("rememberedUser") || "",
+  );
+  const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(
+    !!localStorage.getItem("rememberedUser"),
+  );
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
@@ -18,16 +22,16 @@ export default function Login() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!username || !password) {
-      toast.error('Please fill in all fields');
+      toast.error("Please fill in all fields");
       return;
     }
     setLoading(true);
     try {
       await login(username, password, remember);
-      toast.success('Login successful!');
-      navigate('/dashboard');
+      toast.success("Login successful!");
+      navigate("/dashboard");
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Login failed');
+      toast.error(err.response?.data?.error || "Login failed");
     } finally {
       setLoading(false);
     }
@@ -40,7 +44,7 @@ export default function Login() {
           onClick={toggleTheme}
           className="p-2 rounded-lg bg-white dark:bg-gray-700 shadow hover:shadow-md transition-shadow text-xl"
         >
-          {isDark ? '☀️' : '🌙'}
+          {isDark ? "☀️" : "🌙"}
         </button>
       </div>
 
@@ -49,8 +53,12 @@ export default function Login() {
           {/* Logo & Title */}
           <div className="text-center mb-8">
             <div className="text-5xl mb-3">🏪</div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">POS System</h1>
-            <p className="text-gray-500 dark:text-gray-400 mt-1">Sign in to your account</p>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+              POS System
+            </h1>
+            <p className="text-gray-500 dark:text-gray-400 mt-1">
+              Sign in to your account
+            </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-5">
@@ -74,7 +82,7 @@ export default function Login() {
               </label>
               <div className="relative">
                 <input
-                  type={showPassword ? 'text' : 'password'}
+                  type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full px-4 py-2.5 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
@@ -98,7 +106,10 @@ export default function Login() {
                 onChange={(e) => setRemember(e.target.checked)}
                 className="h-4 w-4 text-blue-600 rounded border-gray-300"
               />
-              <label htmlFor="remember" className="ml-2 text-sm text-gray-600 dark:text-gray-400">
+              <label
+                htmlFor="remember"
+                className="ml-2 text-sm text-gray-600 dark:text-gray-400"
+              >
                 Remember me
               </label>
             </div>
@@ -111,17 +122,9 @@ export default function Login() {
               {loading ? (
                 <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></span>
               ) : null}
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? "Signing in..." : "Sign In"}
             </button>
           </form>
-
-          <div className="mt-6 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-            <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
-              Demo Accounts:<br />
-              Admin: <strong>admin</strong> / <strong>admin123</strong><br />
-              Cashier: <strong>cashier</strong> / <strong>cashier123</strong>
-            </p>
-          </div>
         </div>
       </div>
     </div>

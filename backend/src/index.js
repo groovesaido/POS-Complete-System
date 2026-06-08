@@ -5,6 +5,11 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { PrismaClient } = require("@prisma/client");
 
+// Load .env file if present — allows setting JWT_SECRET, DATABASE_URL, etc.
+try {
+  require("dotenv").config();
+} catch { /* dotenv not available in packaged builds */ }
+
 const authRoutes = require("./routes/auth");
 const productRoutes = require("./routes/products");
 const categoryRoutes = require("./routes/categories");
@@ -23,24 +28,28 @@ const { execSync } = require("child_process");
 const bcrypt = require("bcryptjs");
 
 // ── JWT_SECRET fallback ──
-// In production, persist a generated secret so tokens survive restarts.
-// In development, generate a session-only secret if none is set.
+// Always persist the generated secret to a file so tokens survive restarts,
+// regardless of environment (dev, production/Electron, pkg).
+// Users can also set JWT_SECRET in a .env file or environment variable.
 if (!process.env.JWT_SECRET) {
-  if (process.env.USER_DATA_DIR) {
-    const jwtSecretFile = path.join(process.env.USER_DATA_DIR, ".jwt_secret");
-    if (fs.existsSync(jwtSecretFile)) {
-      process.env.JWT_SECRET = fs.readFileSync(jwtSecretFile, "utf8").trim();
-      console.log("[Backend] JWT_SECRET loaded from persisted file");
-    } else {
-      process.env.JWT_SECRET = crypto.randomBytes(32).toString("hex");
-      fs.writeFileSync(jwtSecretFile, process.env.JWT_SECRET);
-      console.log("[Backend] JWT_SECRET generated and persisted");
-    }
+  // Determine a writable directory to persist the JWT secret
+  const secretDir = process.env.USER_DATA_DIR || path.join(__dirname, "..");
+  const jwtSecretFile = path.join(secretDir, ".jwt_secret");
+
+  if (fs.existsSync(jwtSecretFile)) {
+    process.env.JWT_SECRET = fs.readFileSync(jwtSecretFile, "utf8").trim();
+    console.log("[Backend] JWT_SECRET loaded from persisted file:", jwtSecretFile);
   } else {
     process.env.JWT_SECRET = crypto.randomBytes(32).toString("hex");
-    console.log("[Backend] JWT_SECRET auto-generated for this session");
+    try {
+      fs.writeFileSync(jwtSecretFile, process.env.JWT_SECRET);
+      console.log("[Backend] JWT_SECRET generated and persisted to:", jwtSecretFile);
+    } catch (err) {
+      console.warn("[Backend] Could not persist JWT_SECRET, using in-memory only:", err.message);
+    }
   }
 }
+console.log("[Backend] JWT_SECRET is " + (process.env.JWT_SECRET ? "set" : "NOT SET — this should never happen"));
 
 // Determine the database directory
 // In production (Electron), use USER_DATA_DIR for writable storage
@@ -68,19 +77,32 @@ if (process.env.NODE_ENV === "production") {
   try {
     const flagFile = path.join(dbDir, ".db_initialized");
 
-    // Copy seed database from resources to writable user data directory if needed
+    // Copy seed database from packaged resources to writable user data directory if needed
     if (!fs.existsSync(dbPath)) {
+      // Try multiple locations for the seed database:
+      // 1. pkg builds: next to the executable
+      // 2. Electron: in process.resourcesPath (extraResources)
+      // 3. Development: alongside the prisma directory
+      let seedDbPath = null;
+
       if (process.pkg) {
-        const seedDbPath = path.join(path.dirname(process.execPath), "dev.db");
-        if (fs.existsSync(seedDbPath)) {
-          fs.copyFileSync(seedDbPath, dbPath);
-          console.log("[Backend] Copied seed database to:", dbPath);
-        }
+        seedDbPath = path.join(path.dirname(process.execPath), "dev.db");
+      } else if (process.resourcesPath) {
+        seedDbPath = path.join(process.resourcesPath, "dev.db");
+      } else {
+        seedDbPath = path.join(__dirname, "../prisma/dev.db");
+      }
+
+      if (seedDbPath && fs.existsSync(seedDbPath)) {
+        fs.copyFileSync(seedDbPath, dbPath);
+        console.log("[Backend] Copied seed database from", seedDbPath, "to", dbPath);
+      } else {
+        console.log("[Backend] No seed database found at", seedDbPath, "— Prisma will create an empty database");
       }
     }
 
     if (!fs.existsSync(flagFile)) {
-      console.log("[Backend] First run — database ready (seed shipped with app)");
+      console.log("[Backend] First run — database ready");
       fs.writeFileSync(flagFile, "1"); // mark as initialized
     } else {
       console.log("[Backend] Database already initialized, skipping sync");
@@ -90,9 +112,17 @@ if (process.env.NODE_ENV === "production") {
   }
 }
 // Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, "../uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+// In production (Electron/pkg), use USER_DATA_DIR so the directory is writable.
+// In development, fall back to the project's uploads folder.
+const uploadsDir = process.env.USER_DATA_DIR
+  ? path.join(process.env.USER_DATA_DIR, "uploads")
+  : path.join(__dirname, "../uploads");
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (err) {
+  console.warn("[Backend] Could not create uploads directory:", err.message);
 }
 
 // Security middleware
@@ -164,10 +194,62 @@ if (process.env.SERVE_FRONTEND === "true") {
 
 const PORT = process.env.PORT || 5000;
 
+// ── Self-healing database schema ──
+// If the database file exists but tables are missing (e.g. after a reset,
+// git clean, or dist build), auto-repair by running prisma db push.
+async function ensureDatabaseSchema() {
+  try {
+    // Try a simple query to see if the User table exists
+    await prisma.$queryRaw`SELECT count(*) FROM User`;
+    console.log("[Backend] Database schema verified — tables exist");
+    return true;
+  } catch (err) {
+    // Prisma error codes: P2021 = table not found, P2010 = raw query failed
+    if (err?.code === "P2021" || err?.code === "P2010" || (err?.message && err.message.includes("no such table"))) {
+      console.log("[Backend] Database tables missing — attempting to create schema...");
+
+      if (process.env.NODE_ENV === "production" || process.pkg) {
+        // Production build: try to copy seed database
+        try {
+          let seedDbPath = null;
+          if (process.pkg) {
+            seedDbPath = path.join(path.dirname(process.execPath), "dev.db");
+          } else if (process.resourcesPath) {
+            seedDbPath = path.join(process.resourcesPath, "dev.db");
+          }
+          if (seedDbPath && fs.existsSync(seedDbPath)) {
+            fs.copyFileSync(seedDbPath, dbPath);
+            console.log("[Backend] Copied seed database to", dbPath);
+            return true;
+          }
+        } catch (copyErr) {
+          console.warn("[Backend] Could not copy seed database:", copyErr.message);
+        }
+      }
+
+      // Development (or fallback): run prisma db push to create tables
+      try {
+        const backendDir = path.join(__dirname, "..");
+        console.log("[Backend] Running prisma db push from", backendDir);
+        execSync("npx prisma db push", { cwd: backendDir, stdio: "pipe", timeout: 30000 });
+        console.log("[Backend] Schema created successfully via prisma db push");
+        return true;
+      } catch (pushErr) {
+        console.error("[Backend] prisma db push failed:", pushErr.message);
+        // Don't throw — let the seed attempt fail gracefully below
+        return false;
+      }
+    } else {
+      // Some other database error (permissions, corrupt, etc.)
+      console.warn("[Backend] Database check warning:", err.message);
+      return false;
+    }
+  }
+}
+
 // Seed default data before starting the server (prevents race condition on first run)
 // NOTE: Keep this inline seed in sync with prisma/seed.js
 async function seedDatabase() {
-  if (process.env.NODE_ENV !== "production") return;
   try {
     const userCount = await prisma.user.count();
     if (userCount === 0) {
@@ -247,14 +329,22 @@ async function seedDatabase() {
   }
 }
 
-// Start server after seeding completes
-seedDatabase().then(() => {
+// Start server after schema check + seeding completes
+ensureDatabaseSchema().then(() => {
+  return seedDatabase();
+}).then(() => {
   const server = app.listen(PORT, () => {
     console.log(`POS Backend running on port ${PORT}`);
     // Notify parent process (Electron) that the server is ready
     if (process.send) {
       process.send("ready");
     }
+  });
+}).catch((err) => {
+  console.error("[Backend] Startup failed:", err.message);
+  // Still try to start the server so health check can report status
+  const server = app.listen(PORT, () => {
+    console.log(`POS Backend running on port ${PORT} (degraded state)`);
   });
 });
 

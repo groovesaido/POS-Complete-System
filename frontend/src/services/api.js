@@ -18,13 +18,21 @@ api.interceptors.request.use((config) => {
 });
 
 // Response interceptor to handle 401
+// Only clear the token and redirect if a token actually exists.
+// This prevents a redirect loop on initial page load when:
+//   - The backend returns 401 (e.g., backend not ready)
+//   - No token is in localStorage
+//   - The interceptor redirects to /login, which triggers another 401, etc.
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem("token");
-      localStorage.removeItem("user");
-      if (window.location.pathname !== "/login") {
+      const token = localStorage.getItem("token");
+      // Only clear and redirect if there's a token (genuinely expired/invalid)
+      // Don't act on 401s when there's no token — avoids redirect loops
+      if (token) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
         window.location.hash = "#/login";
       }
     }
