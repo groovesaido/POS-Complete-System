@@ -111,4 +111,103 @@ router.post('/change-password', authenticate, async (req, res) => {
   }
 });
 
+// ── First-time setup ──
+
+/**
+ * Check if the app has any users yet (i.e., needs first-time setup).
+ */
+router.get('/needs-setup', async (req, res) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const userCount = await prisma.user.count();
+    res.json({ needsSetup: userCount === 0 });
+  } catch (error) {
+    console.error('Setup check error:', error);
+    res.status(500).json({ error: 'Failed to check setup status.' });
+  }
+});
+
+/**
+ * First-time setup: create the initial admin user and store settings.
+ * Only works when no users exist in the database.
+ * Body: { name, username, password, storeName, storePhone, storeEmail }
+ */
+router.post('/setup', async (req, res) => {
+  try {
+    const prisma = req.app.locals.prisma;
+
+    // Ensure this can only be used during first-time setup
+    const userCount = await prisma.user.count();
+    if (userCount > 0) {
+      return res.status(400).json({ error: 'Setup has already been completed.' });
+    }
+
+    const { name, username, password, storeName, storePhone, storeEmail } = req.body;
+
+    if (!name || !username || !password || !storeName || !storePhone || !storeEmail) {
+      return res.status(400).json({ error: 'All fields are required: name, username, password, storeName, storePhone, storeEmail.' });
+    }
+
+    if (username.length < 3) {
+      return res.status(400).json({ error: 'Username must be at least 3 characters.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+    }
+
+    // Check username uniqueness
+    const existingUser = await prisma.user.findUnique({ where: { username } });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Username already exists.' });
+    }
+
+    // Check email uniqueness
+    const existingEmail = await prisma.user.findUnique({ where: { email: storeEmail } });
+    if (existingEmail) {
+      return res.status(400).json({ error: 'Email already in use.' });
+    }
+
+    // Create the admin user
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await prisma.user.create({
+      data: {
+        name,
+        username,
+        email: storeEmail,
+        password: hashedPassword,
+        role: 'admin',
+        status: 'active',
+      },
+    });
+
+    // Save store name, phone, and email to settings
+    await prisma.setting.upsert({
+      where: { key: 'store_name' },
+      update: { value: storeName },
+      create: { key: 'store_name', value: storeName },
+    });
+
+    await prisma.setting.upsert({
+      where: { key: 'store_phone' },
+      update: { value: storePhone },
+      create: { key: 'store_phone', value: storePhone },
+    });
+
+    await prisma.setting.upsert({
+      where: { key: 'store_email' },
+      update: { value: storeEmail },
+      create: { key: 'store_email', value: storeEmail },
+    });
+
+    console.log(`[Backend] First-time setup complete: admin user "${username}", store "${storeName}"`);
+
+    res.json({ message: 'Setup complete. You can now log in.' });
+  } catch (error) {
+    console.error('Setup error:', error);
+    res.status(500).json({ error: 'Setup failed: ' + error.message });
+  }
+});
+
 module.exports = router;

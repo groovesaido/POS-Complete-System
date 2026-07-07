@@ -1,0 +1,28 @@
+{
+  "name": "license-server",
+  "version": "1.0.0",
+  "description": "License management server for Bythebuzz POS",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev --name init",
+    "prisma:push": "prisma db push",
+    "seed": "node prisma/seed.js",
+    "setup": "npx prisma db push && node prisma/seed.js",
+    "vercel-build": "npx prisma generate && echo 'Prisma client generated for Vercel'"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.0",
+    "helmet": "^7.1.0",
+    "prisma": "^5.22.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}

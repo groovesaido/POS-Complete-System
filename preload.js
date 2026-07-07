@@ -1,5 +1,18 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+// ── License management API ──
+contextBridge.exposeInMainWorld("electronLicense", {
+  /** Get full cached license data from encrypted local storage */
+  getCachedLicense: () => ipcRenderer.invoke("license:get-cached"),
+  /** Save full license data to encrypted local storage */
+  setCachedLicense: (data) => ipcRenderer.invoke("license:set-cached", data),
+  /** Get stable machine identifier */
+  getMachineId: () => ipcRenderer.invoke("license:get-machine-id"),
+  /** Notify main process that license is valid (reload to app) */
+  licenseValid: () => ipcRenderer.invoke("license:valid"),
+});
+
+// ── Auto-updater API ──
 contextBridge.exposeInMainWorld("electronUpdater", {
   // Check for updates manually
   checkForUpdates: () => ipcRenderer.send("check-for-updates"),
@@ -45,3 +58,4 @@ contextBridge.exposeInMainWorld("electronUpdater", {
     return () => ipcRenderer.removeListener("update-error", listener);
   },
 });
+

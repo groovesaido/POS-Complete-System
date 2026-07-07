@@ -1,0 +1,11 @@
+# License server environment (contains credentials)
+.env
+
+# Node modules
+node_modules/
+
+# Prisma
+prisma/dev.db
+prisma/dev.db-journal
+
+.vercel

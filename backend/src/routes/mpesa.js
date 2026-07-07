@@ -1,11 +1,18 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
 const SANDBOX_BASE = 'https://sandbox.safaricom.co.ke';
 const PRODUCTION_BASE = 'https://api.safaricom.co.ke';
+
+// ── OAuth token cache ──
+// Keys are `${consumerKey}:${useSandbox}` — reuses tokens across calls
+// until they're close to expiry.
+const tokenCache = new Map();
+const TOKEN_SAFETY_BUFFER_SEC = 60; // refresh 60s before actual expiry
 
 /**
  * Generate a timestamp in YYYYMMDDHHmmss format
@@ -22,16 +29,32 @@ function getTimestamp() {
 }
 
 /**
- * Get OAuth access token from Daraja API
+ * Get OAuth access token from Daraja API with caching.
+ * Tokens are valid for 1 hour; cached tokens are reused until
+ * TOKEN_SAFETY_BUFFER_SEC before expiry.
  */
 async function getAccessToken(consumerKey, consumerSecret, useSandbox = true) {
+  const cacheKey = `${consumerKey}:${useSandbox}`;
+  const cached = tokenCache.get(cacheKey);
+
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.token;
+  }
+
   const base = useSandbox ? SANDBOX_BASE : PRODUCTION_BASE;
   const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
 
   const { data } = await axios.get(
     `${base}/oauth/v1/generate?grant_type=client_credentials`,
-    { headers: { Authorization: `Basic ${auth}` } }
+    {
+      headers: { Authorization: `Basic ${auth}` },
+      timeout: 15000,
+    }
   );
+
+  // Cache with safety buffer so we refresh before the token actually expires
+  const expiresAt = Date.now() + (data.expires_in - TOKEN_SAFETY_BUFFER_SEC) * 1000;
+  tokenCache.set(cacheKey, { token: data.access_token, expiresAt });
 
   return data.access_token;
 }
@@ -49,6 +72,7 @@ async function stkPush({
   callbackUrl,
   accountReference,
   transactionDesc,
+  transactionType = 'CustomerPayBillOnline',
   useSandbox = true,
 }) {
   const base = useSandbox ? SANDBOX_BASE : PRODUCTION_BASE;
@@ -67,7 +91,7 @@ async function stkPush({
     BusinessShortCode: businessShortCode,
     Password: password,
     Timestamp: timestamp,
-    TransactionType: 'CustomerPayBillOnline',
+    TransactionType: transactionType,
     Amount: Math.round(amount),
     PartyA: partyA,
     PartyB: partyB,
@@ -85,6 +109,7 @@ async function stkPush({
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      timeout: 15000,
     }
   );
 
@@ -124,6 +149,7 @@ async function stkQuery({
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      timeout: 15000,
     }
   );
 
@@ -153,6 +179,40 @@ async function getDefaultMpesaAccount(prisma) {
   return accounts.find((a) => a.isDefault) || accounts[0] || null;
 }
 
+/**
+ * Get or auto-generate the callback secret token used to verify that
+ * incoming callbacks genuinely originated from our STK push requests.
+ * The secret is persisted in the Setting table so it survives restarts.
+ * Uses upsert for atomicity — no race conditions on first creation.
+ */
+async function getCallbackSecret(prisma) {
+  const setting = await prisma.setting.upsert({
+    where: { key: 'mpesa_callback_secret' },
+    update: {},
+    create: {
+      key: 'mpesa_callback_secret',
+      value: crypto.randomBytes(16).toString('hex'),
+    },
+  });
+  return setting.value;
+}
+
+/**
+ * Build the callback URL with the secret token appended as a query parameter.
+ * If the user has set a custom callback URL in settings, it is used as-is
+ * and the token is appended. Otherwise the URL is derived from the request.
+ */
+async function buildCallbackUrl(req, prisma) {
+  const [callbackSetting, secret] = await Promise.all([
+    prisma.setting.findUnique({ where: { key: 'mpesa_callback_url' } }),
+    getCallbackSecret(prisma),
+  ]);
+
+  const base = callbackSetting?.value || `${req.protocol}://${req.get('host')}/api/mpesa/callback`;
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}token=${secret}`;
+}
+
 // ──────────────────────────────────────────────
 // Routes
 // ──────────────────────────────────────────────
@@ -175,11 +235,8 @@ router.post('/stkpush', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Amount must be greater than zero.' });
     }
 
-    // Get the callback URL from settings or derive from request
-    const callbackSetting = await prisma.setting.findUnique({
-      where: { key: 'mpesa_callback_url' },
-    });
-    const callbackUrl = callbackSetting?.value || `${req.protocol}://${req.get('host')}/api/mpesa/callback`;
+    // Build the callback URL with the secret token for origin validation
+    const callbackUrl = await buildCallbackUrl(req, prisma);
 
     // Get selected account or default
     let account;
@@ -200,6 +257,8 @@ router.post('/stkpush', authenticate, async (req, res) => {
 
     const useSandbox = account.useSandbox !== false; // default to sandbox
 
+    const transactionType = account.type === 'till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
+
     const result = await stkPush({
       consumerKey: account.consumerKey,
       consumerSecret: account.consumerSecret,
@@ -210,6 +269,7 @@ router.post('/stkpush', authenticate, async (req, res) => {
       callbackUrl,
       accountReference: accountReference || `POS-${Date.now().toString().slice(-6)}`,
       transactionDesc: `Payment of KSh ${amount}`,
+      transactionType,
       useSandbox,
     });
 
@@ -244,6 +304,14 @@ router.post('/callback', async (req, res) => {
   try {
     const prisma = req.app.locals.prisma;
     const body = req.body;
+    const { token } = req.query;
+
+    // Validate the callback secret token to prevent forged callbacks
+    const expectedSecret = await getCallbackSecret(prisma);
+    if (!token || token !== expectedSecret) {
+      console.warn('[M-Pesa] Callback rejected — invalid or missing secret token');
+      return res.status(403).json({ error: 'Forbidden' });
+    }
 
     console.log('M-Pesa callback received:', JSON.stringify(body, null, 2));
 
@@ -492,11 +560,8 @@ router.post('/transaction/:transactionId/retry', authenticate, async (req, res) 
       return res.status(400).json({ error: 'Transaction is not in pending M-Pesa status.' });
     }
 
-    // Get callback URL
-    const callbackSetting = await prisma.setting.findUnique({
-      where: { key: 'mpesa_callback_url' },
-    });
-    const callbackUrl = callbackSetting?.value || `${req.protocol}://${req.get('host')}/api/mpesa/callback`;
+    // Build the callback URL with the secret token for origin validation
+    const callbackUrl = await buildCallbackUrl(req, prisma);
 
     // Get the default M-Pesa account
     const accounts = await getMpesaAccounts(prisma);
@@ -514,6 +579,8 @@ router.post('/transaction/:transactionId/retry', authenticate, async (req, res) 
     const targetAmount = Math.round(amount || transaction.total);
     const useSandbox = account.useSandbox !== false;
 
+    const transactionType = account.type === 'till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
+
     const result = await stkPush({
       consumerKey: account.consumerKey,
       consumerSecret: account.consumerSecret,
@@ -524,6 +591,7 @@ router.post('/transaction/:transactionId/retry', authenticate, async (req, res) 
       callbackUrl,
       accountReference: transaction.receiptNumber,
       transactionDesc: `Payment of KSh ${targetAmount}`,
+      transactionType,
       useSandbox,
     });
 

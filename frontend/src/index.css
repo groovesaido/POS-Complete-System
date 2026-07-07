@@ -12,6 +12,30 @@
   --color-info: #06b6d4;
 }
 
+/* Light mode: slightly darker page background for reduced eye strain */
+:root:not(.dark) body {
+  background-color: #f1f5f9;
+}
+
+/* Light mode: cards and surfaces use a softer off-white instead of pure white */
+:root:not(.dark) .bg-white {
+  background-color: #f8fafc;
+}
+
+/* Keep input fields pure white for clarity */
+:root:not(.dark) input.bg-white,
+:root:not(.dark) textarea.bg-white,
+:root:not(.dark) select.bg-white {
+  background-color: #ffffff;
+}
+
+/* Keep modal content pure white */
+:root:not(.dark) .fixed input.bg-white,
+:root:not(.dark) .fixed textarea.bg-white,
+:root:not(.dark) .fixed select.bg-white {
+  background-color: #ffffff;
+}
+
 body {
   margin: 0;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
@@ -22,7 +46,20 @@ body {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
 .dark ::-webkit-scrollbar-thumb { background: #475569; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* Cart-specific scrollbar — thicker, more visible, with hover/focus treatment */
+.cart-scrollbar { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
+.cart-scrollbar::-webkit-scrollbar { width: 8px; }
+.cart-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+.cart-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; border: 2px solid transparent; background-clip: content-box; }
+.cart-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; background-clip: content-box; }
+.dark .cart-scrollbar { scrollbar-color: #475569 #1e293b; }
+.dark .cart-scrollbar::-webkit-scrollbar-track { background: #1e293b; }
+.dark .cart-scrollbar::-webkit-scrollbar-thumb { background: #475569; background-clip: content-box; }
+.dark .cart-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; background-clip: content-box; }
 
 /* Print styles */
 @media print {

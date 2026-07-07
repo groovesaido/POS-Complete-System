@@ -96,14 +96,50 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
       : { status: 'completed' };
 
     // Top selling products (filtered by chart date if provided)
-    const topProducts = await prisma.transactionItem.groupBy({
-      by: ['productName'],
+    // Group by both productId and productName so we can look up cost prices
+    const topProductsRaw = await prisma.transactionItem.groupBy({
+      by: ['productName', 'productId'],
       _sum: { quantity: true, totalPrice: true },
       where: chartDateFilter ? {
         transaction: chartTransactionFilter,
       } : undefined,
-      orderBy: { _sum: { quantity: 'desc' } },
-      take: 10,
+      orderBy: { _sum: { totalPrice: 'desc' } },
+    });
+
+    // Fetch cost prices for all products involved
+    const productIds = topProductsRaw
+      .filter(p => p.productId != null)
+      .map(p => p.productId);
+    const costPriceMap = {};
+    if (productIds.length > 0) {
+      const products = await prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, costPrice: true },
+      });
+      for (const p of products) {
+        costPriceMap[p.id] = p.costPrice;
+      }
+    }
+
+    // Build enriched top products with profit data
+    const topProducts = topProductsRaw.map((p, index) => {
+      const quantity = p._sum.quantity || 0;
+      const revenue = p._sum.totalPrice || 0;
+      const unitCost = p.productId != null ? (costPriceMap[p.productId] || 0) : 0;
+      const cost = unitCost * quantity;
+      const profit = revenue - cost;
+      return {
+        rank: index + 1,
+        productId: p.productId,
+        name: p.productName,
+        quantity,
+        revenue,
+        cost,
+        profit,
+        margin: revenue > 0 ? (profit / revenue) * 100 : 0,
+        unitCost,
+        unitPrice: quantity > 0 ? revenue / quantity : 0,
+      };
     });
 
     // Sales by category (filtered by chart date if provided)
@@ -263,11 +299,7 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res) => {
       weekdaySales,
       monthWeekSales: monthWeekSales,
       yearlySales,
-      topProducts: topProducts.map(p => ({
-        name: p.productName,
-        quantity: p._sum.quantity,
-        revenue: p._sum.totalPrice,
-      })),
+      topProducts,
       categorySales: categorySalesData.filter(c => c.revenue > 0),
       paymentMethods: Object.entries(paymentMethods).map(([method, amount]) => ({
         method,

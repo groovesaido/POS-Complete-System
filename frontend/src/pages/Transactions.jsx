@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { transactionsAPI, mpesaAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import ConfirmDialog from '../components/ConfirmDialog';
 import toast from 'react-hot-toast';
 
 const formatCurrency = (v) => `KSh ${Number(v || 0).toLocaleString()}`;
@@ -25,7 +26,12 @@ function ReceiptModal({ tx, onClose, onAction }) {
           <tbody>
             {tx.items?.map((item) => (
               <tr key={item.id}>
-                <td>{item.productName}</td>
+                <td>
+                  {item.productName}
+                  <span className={`ml-1 ${item.pricingType === "wholesale" ? "text-purple-500" : "text-blue-500"}`}>
+                    ({item.pricingType === "wholesale" ? "W" : "R"})
+                  </span>
+                </td>
                 <td className="text-center">{item.quantity}</td>
                 <td className="text-right">{formatCurrency(item.unitPrice)}</td>
                 <td className="text-right">{formatCurrency(item.totalPrice)}</td>
@@ -50,17 +56,17 @@ function ReceiptModal({ tx, onClose, onAction }) {
           )}
         </div>
         <hr className="border-dashed my-2" />
-        <p className="text-xs text-center text-gray-500 mt-2">Thank you for your purchase!</p>
+        <p className="text-xs text-center text-gray-500 mt-2">Thank you and come back again!</p>
         <div className="flex justify-center gap-3 mt-4">
           {onAction && tx.status === 'pending_mpesa' && (
             <>
               <button onClick={() => onAction('retry', tx)}
                 className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                📱 Retry M-Pesa
+                <img src="./icons/phone-icon.png" alt="" className="w-4 h-4" /> Retry M-Pesa
               </button>
               <button onClick={() => onAction('complete_cash', tx)}
                 className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700">
-                💵 Complete as Cash
+                <img src="./icons/card-icon.png" alt="" className="w-4 h-4" /> Complete as Cash
               </button>
               <button onClick={() => onAction('cancel', tx)}
                 className="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700">
@@ -110,7 +116,7 @@ function CompleteModal({ tx, onClose, onComplete }) {
                       ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700'
                       : 'border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'
                   }`}>
-                  {m === 'cash' ? '💵 Cash' : m === 'debit_card' ? '💳 Debit' : '💳 Credit'}
+                  {m === 'cash' ? <><img src="./icons/card-icon.png" alt="" className="w-4 h-4" /> Cash</> : m === 'debit_card' ? <><img src="./icons/card-icon.png" alt="" className="w-4 h-4" /> Debit</> : <><img src="./icons/card-icon.png" alt="" className="w-4 h-4" /> Credit</>}
                 </button>
               ))}
             </div>
@@ -156,7 +162,7 @@ function RetryMpesaModal({ tx, onClose, onRetry }) {
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-sm shadow-xl" onClick={e => e.stopPropagation()}>
-        <h3 className="text-lg font-bold mb-3">📱 Retry M-Pesa Payment</h3>
+        <h3 className="text-lg font-bold mb-3 flex items-center gap-2"><img src="./icons/phone-icon.png" alt="" className="w-5 h-5" /> Retry M-Pesa Payment</h3>
         <p className="text-sm text-gray-500 mb-3">
           Receipt: {tx.receiptNumber}<br />
           Amount: {formatCurrency(tx.total)}
@@ -177,7 +183,7 @@ function RetryMpesaModal({ tx, onClose, onRetry }) {
               {submitting ? (
                 <><span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span> Sending...</>
               ) : (
-                '📱 Send M-Pesa Request'
+                <><img src="./icons/phone-icon.png" alt="" className="w-4 h-4" /> Send M-Pesa Request</>
               )}
             </button>
           </div>
@@ -210,8 +216,12 @@ export default function Transactions() {
   const [completeModalTx, setCompleteModalTx] = useState(null);
   const [retryModalTx, setRetryModalTx] = useState(null);
 
+  // Custom confirm dialog for refund / cancel actions
+  const [confirmDialog, setConfirmDialog] = useState({ open: false, title: '', message: '', onConfirm: null, confirmText: 'Delete', icon: '⚠️' });
+
   const statusTabs = [
     { id: '', label: 'All', color: 'gray' },
+    { id: 'draft', label: 'Drafts', color: 'blue', icon: 'draft-icon' },
     { id: 'completed', label: '✅ Completed', color: 'green' },
     { id: 'pending_mpesa', label: '⏳ Pending M-Pesa', color: 'yellow' },
     { id: 'refunded', label: '↩️ Refunded', color: 'orange' },
@@ -290,15 +300,24 @@ export default function Transactions() {
   };
 
   const handleRefund = async (tx) => {
-    if (!window.confirm(`Refund transaction ${tx.receiptNumber}? This will restore inventory.`)) return;
-    try {
-      await transactionsAPI.refund(tx.id);
-      toast.success('Transaction refunded');
-      fetchTransactions();
-      setSelectedTx(null);
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'Failed to refund');
-    }
+    setConfirmDialog({
+      open: true,
+      title: 'Refund Transaction',
+      icon: '↩️',
+      confirmText: 'Refund',
+      message: `Refund transaction ${tx.receiptNumber}? This will restore inventory for all items. This action cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmDialog(p => ({ ...p, open: false }));
+        try {
+          await transactionsAPI.refund(tx.id);
+          toast.success('Transaction refunded');
+          fetchTransactions();
+          setSelectedTx(null);
+        } catch (err) {
+          toast.error(err.response?.data?.error || 'Failed to refund');
+        }
+      },
+    });
   };
 
   // Complete a pending M-Pesa transaction as cash/card
@@ -333,15 +352,46 @@ export default function Transactions() {
 
   // Cancel/void a pending transaction
   const handleCancelPending = async (tx) => {
-    if (!window.confirm(`Cancel pending transaction ${tx.receiptNumber}? Items will NOT be restored (they were never deducted).`)) return;
-    try {
-      await mpesaAPI.cancelPending(tx.id);
-      toast.success('Transaction cancelled');
-      setSelectedTx(null);
-      fetchTransactions();
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'Failed to cancel');
-    }
+    setConfirmDialog({
+      open: true,
+      title: 'Cancel Pending Transaction',
+      icon: '✕',
+      confirmText: 'Cancel Transaction',
+      message: `Cancel pending transaction ${tx.receiptNumber}? Items will NOT be restored (they were never deducted).`,
+      onConfirm: async () => {
+        setConfirmDialog(p => ({ ...p, open: false }));
+        try {
+          await mpesaAPI.cancelPending(tx.id);
+          toast.success('Transaction cancelled');
+          setSelectedTx(null);
+          fetchTransactions();
+        } catch (err) {
+          toast.error(err.response?.data?.error || 'Failed to cancel');
+        }
+      },
+    });
+  };
+
+  // Delete a draft transaction completely from the database
+  const handleDeleteDraft = async (tx) => {
+    setConfirmDialog({
+      open: true,
+      title: 'Delete Draft',
+      icon: '🗑️',
+      confirmText: 'Delete',
+      message: `Delete draft ${tx.receiptNumber}? This will permanently remove this draft from the database. This action cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmDialog(p => ({ ...p, open: false }));
+        try {
+          await transactionsAPI.deleteDraft(tx.id);
+          toast.success('Draft deleted');
+          setSelectedTx(null);
+          fetchTransactions();
+        } catch (err) {
+          toast.error(err.response?.data?.error || 'Failed to delete draft');
+        }
+      },
+    });
   };
 
   // Handle action from receipt modal
@@ -359,18 +409,21 @@ export default function Transactions() {
   const getStatusBadge = (status) => {
     const styles = {
       completed: 'bg-green-100 dark:bg-green-900/30 text-green-600',
+      draft: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600',
       pending_mpesa: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600',
       refunded: 'bg-orange-100 dark:bg-orange-900/30 text-orange-600',
       failed: 'bg-red-100 dark:bg-red-900/30 text-red-600',
     };
     const labels = {
       completed: 'Completed',
+      draft: 'Draft',
       pending_mpesa: '⏳ Pending',
       refunded: 'Refunded',
       failed: 'Failed',
     };
     return (
-      <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${styles[status] || 'bg-gray-100 dark:bg-gray-700 text-gray-600'}`}>
+      <span className={`px-2 py-0.5 text-xs rounded-full font-medium inline-flex items-center gap-1 ${styles[status] || 'bg-gray-100 dark:bg-gray-700 text-gray-600'}`}>
+        {status === 'draft' && <img src="./icons/draft-icon.png" alt="" className="w-3 h-3" />}
         {labels[status] || status}
       </span>
     );
@@ -389,7 +442,14 @@ export default function Transactions() {
                 ? 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 border-b-white dark:border-b-gray-800 -mb-px font-medium'
                 : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50'
             }`}>
-            {tab.label}
+            {tab.icon ? (
+              <span className="flex items-center gap-1.5">
+                <img src={`./icons/${tab.icon}.png`} alt="" className="w-4 h-4" />
+                {tab.label}
+              </span>
+            ) : (
+              tab.label
+            )}
             {tab.id === 'pending_mpesa' && transactions.some(t => t.status === 'pending_mpesa') && statusFilter !== 'pending_mpesa' && (
               <span className="ml-1.5 inline-block w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></span>
             )}
@@ -449,16 +509,27 @@ export default function Transactions() {
                   <td className="py-3 px-4 text-right text-xs text-gray-500">{new Date(tx.createdAt).toLocaleDateString()}</td>
                   <td className="py-3 px-4">
                     <div className="flex justify-center gap-1">
-                      <button onClick={(e) => { e.stopPropagation(); setSelectedTx(tx); }} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="View">👁️</button>
+                      <button onClick={(e) => { e.stopPropagation(); setSelectedTx(tx); }} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="View"><img src="./icons/view-icon.png" alt="View" className="w-4 h-4" /></button>
+                      {tx.status === 'draft' && (
+                        <>
+                          <button onClick={(e) => { e.stopPropagation(); navigate(`/pos?resumeDraft=${tx.id}`); }} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded font-medium flex items-center gap-1" title="Resume Draft">
+                            <img src="./icons/resume-button-icon.png" alt="Resume" className="w-4 h-4" />
+                            <span className="text-xs">Resume</span>
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); handleDeleteDraft(tx); }} className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded" title="Delete Draft">
+                            <img src="./icons/delete-icon.png" alt="Delete" className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
                       {tx.status === 'pending_mpesa' && (
                         <>
-                          <button onClick={(e) => { e.stopPropagation(); setRetryModalTx(tx); }} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="Retry M-Pesa">📱</button>
-                          <button onClick={(e) => { e.stopPropagation(); setCompleteModalTx(tx); }} className="p-1.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 rounded" title="Complete as Cash/Card">💵</button>
-                          <button onClick={(e) => { e.stopPropagation(); handleCancelPending(tx); }} className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded" title="Cancel/Void">✕</button>
+                          <button onClick={(e) => { e.stopPropagation(); setRetryModalTx(tx); }} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="Retry M-Pesa"><img src="./icons/phone-icon.png" alt="Retry" className="w-4 h-4" /></button>
+                          <button onClick={(e) => { e.stopPropagation(); setCompleteModalTx(tx); }} className="p-1.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 rounded" title="Complete as Cash/Card"><img src="./icons/card-icon.png" alt="Complete" className="w-4 h-4" /></button>
+                          <button onClick={(e) => { e.stopPropagation(); handleCancelPending(tx); }} className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded" title="Cancel/Void"><img src="./icons/delete-icon.png" alt="Cancel" className="w-4 h-4" /></button>
                         </>
                       )}
                       {user?.role === 'admin' && tx.status === 'completed' && (
-                        <button onClick={(e) => { e.stopPropagation(); handleRefund(tx); }} className="p-1.5 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30 rounded" title="Refund">↩️</button>
+                        <button onClick={(e) => { e.stopPropagation(); handleRefund(tx); }} className="p-1.5 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30 rounded" title="Refund"><img src="./icons/refund-icon.png" alt="Refund" className="w-4 h-4" /></button>
                       )}
                     </div>
                   </td>
@@ -480,6 +551,16 @@ export default function Transactions() {
       {selectedTx && <ReceiptModal tx={selectedTx} onClose={() => setSelectedTx(null)} onAction={handleReceiptAction} />}
       {completeModalTx && <CompleteModal tx={completeModalTx} onClose={() => setCompleteModalTx(null)} onComplete={handleCompletePending} />}
       {retryModalTx && <RetryMpesaModal tx={retryModalTx} onClose={() => setRetryModalTx(null)} onRetry={handleRetryMpesa} />}
+
+      <ConfirmDialog
+        open={confirmDialog.open}
+        title={confirmDialog.title}
+        icon={confirmDialog.icon}
+        confirmText={confirmDialog.confirmText}
+        message={confirmDialog.message}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog(p => ({ ...p, open: false }))}
+      />
     </div>
   );
 }

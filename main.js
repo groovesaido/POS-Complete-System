@@ -1,9 +1,83 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
+const crypto = require("crypto");
 const { spawn, execSync } = require("child_process");
 const http = require("http");
 const fs = require("fs");
 const { autoUpdater } = require("electron-updater");
+
+// ── License management ──
+// License data is stored in an encrypted JSON file in the app's userData directory.
+// AES-256-CBC encryption prevents casual tampering.
+// node-machine-id provides a stable unique machine identifier.
+const LICENSE_CACHE_FILE = "license.dat"; // Not .json to avoid casual inspection
+
+// Encryption key: derived from a hardcoded app secret + userData path
+// This makes the key unique per installation while keeping it deterministic
+function getLicenseEncryptionKey() {
+  const userData = app.getPath("userData");
+  const APP_SECRET = "Bythebuzz-POS-2026-License-Encrypt";
+  const hash = crypto.createHash("sha256").update(APP_SECRET + userData).digest();
+  return {
+    key: hash.slice(0, 32), // AES-256 key
+    iv: hash.slice(16, 32), // IV (16 bytes from the middle of the hash)
+  };
+}
+
+function encryptLicenseData(data) {
+  const { key, iv } = getLicenseEncryptionKey();
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  let encrypted = cipher.update(JSON.stringify(data), "utf8", "base64");
+  encrypted += cipher.final("base64");
+  return encrypted;
+}
+
+function decryptLicenseData(encrypted) {
+  const { key, iv } = getLicenseEncryptionKey();
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  let decrypted = decipher.update(encrypted, "base64", "utf8");
+  decrypted += decipher.final("utf8");
+  return JSON.parse(decrypted);
+}
+
+function getLicenseCachePath() {
+  return path.join(app.getPath("userData"), LICENSE_CACHE_FILE);
+}
+
+function readLicenseCache() {
+  const cachePath = getLicenseCachePath();
+  try {
+    if (fs.existsSync(cachePath)) {
+      const encrypted = fs.readFileSync(cachePath, "utf8");
+      return decryptLicenseData(encrypted);
+    }
+  } catch (err) {
+    console.warn("[License] Failed to read license cache:", err.message);
+  }
+  return null;
+}
+
+function writeLicenseCache(data) {
+  const cachePath = getLicenseCachePath();
+  try {
+    const dir = path.dirname(cachePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const encrypted = encryptLicenseData(data);
+    fs.writeFileSync(cachePath, encrypted, "utf8");
+    return true;
+  } catch (err) {
+    console.warn("[License] Failed to write license cache:", err.message);
+    return false;
+  }
+}
+
+let machineIdCache = null;
+try {
+  const { machineId } = require("node-machine-id");
+  machineIdCache = machineId;
+} catch { /* node-machine-id not installed yet */ }
 
 let backendProcess = null;
 const isDev = !app.isPackaged;
@@ -207,7 +281,80 @@ autoUpdater.on("error", (err) => {
   });
 });
 
-// ── IPC Handlers ──
+// ── License IPC Handlers ──
+
+/**
+ * Get the full cached license data from encrypted local storage.
+ * Falls back to the old electron-store format for migration.
+ * Returns { key, machineId, customerName, expiresAt, status, lastValidated }
+ * or null if no cache exists or decryption fails.
+ */
+ipcMain.handle("license:get-cached", () => {
+  // Step 1: Try reading from the new encrypted cache
+  const cached = readLicenseCache();
+  if (cached) return cached;
+
+  // Step 2: Migration — check for old electron-store license.json
+  try {
+    const oldPath = path.join(app.getPath("userData"), "license.json");
+    if (fs.existsSync(oldPath)) {
+      const raw = fs.readFileSync(oldPath, "utf8");
+      const oldData = JSON.parse(raw);
+      // Old format stored { key, lastValidated } directly under the data key
+      const oldKey = oldData?.key;
+      if (oldKey) {
+        console.log("[License] Migrating license from old electron-store format");
+        // Return minimal cache with the key so the frontend can do server validation
+        // which will write the full new-format cache
+        return { key: oldKey };
+      }
+    }
+  } catch (err) {
+    console.warn("[License] Old electron-store migration failed:", err.message);
+  }
+
+  return null;
+});
+
+/**
+ * Save full license data to encrypted local storage.
+ * data is an object: { key, machineId, customerName, expiresAt, status }
+ */
+ipcMain.handle("license:set-cached", (_event, data) => {
+  return writeLicenseCache(data);
+});
+
+/**
+ * Get a stable machine identifier.
+ * Uses node-machine-id if available, otherwise hashes the userData path.
+ */
+ipcMain.handle("license:get-machine-id", async () => {
+  if (machineIdCache) {
+    try {
+      return await machineIdCache();
+    } catch {
+      // Fall through to fallback
+    }
+  }
+  // Fallback: generate a stable ID using the user data directory path
+  const userData = app.getPath("userData");
+  return "elec-" + crypto.createHash("sha256").update(userData).digest("hex").slice(0, 12);
+});
+
+ipcMain.handle("license:valid", () => {
+  // Called when the license screen detects a valid license and the user clicks "Launch POS"
+  // The main window is already loaded, so we just reload to show the login page
+  const wins = BrowserWindow.getAllWindows();
+  wins.forEach((win) => {
+    if (isDev) {
+      win.loadURL("http://localhost:3000");
+    } else {
+      win.loadFile(path.join(__dirname, "frontend/dist/index.html"));
+    }
+  });
+});
+
+// ── Other IPC Handlers ──
 
 ipcMain.on("check-for-updates", () => {
   console.log("[IPC] Manual update check requested");

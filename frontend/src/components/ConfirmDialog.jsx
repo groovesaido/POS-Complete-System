@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-export default function ConfirmDialog({ open, title, message, onConfirm, onCancel }) {
+export default function ConfirmDialog({ open, title, message, onConfirm, onCancel, confirmText = "Delete", icon = "⚠️" }) {
   const confirmRef = useRef(null);
 
   useEffect(() => {
@@ -31,10 +31,17 @@ export default function ConfirmDialog({ open, title, message, onConfirm, onCance
         className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-sm shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {title && (
-          <h3 className="text-lg font-bold mb-2">{title}</h3>
+        {icon && (
+          <div className="flex justify-center mb-4">
+            <div className="w-14 h-14 rounded-full bg-red-50 dark:bg-red-900/20 flex items-center justify-center text-2xl">
+              {icon}
+            </div>
+          </div>
         )}
-        <p className="text-gray-600 dark:text-gray-300 mb-6">
+        {title && (
+          <h3 className="text-lg font-bold mb-2 text-center">{title}</h3>
+        )}
+        <p className="text-gray-600 dark:text-gray-300 mb-6 text-center">
           {message}
         </p>
         <div className="flex justify-end gap-3">
@@ -51,7 +58,7 @@ export default function ConfirmDialog({ open, title, message, onConfirm, onCance
             onClick={onConfirm}
             className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-medium"
           >
-            Delete
+            {confirmText}
           </button>
         </div>
       </div>

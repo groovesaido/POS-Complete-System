@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { transactionsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import ConfirmDialog from '../components/ConfirmDialog';
 import toast from 'react-hot-toast';
 
 const formatCurrency = (v) => `KSh ${Number(v || 0).toLocaleString()}`;
@@ -12,6 +13,7 @@ export default function TransactionDetail() {
   const { user } = useAuth();
   const [tx, setTx] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [confirmRefund, setConfirmRefund] = useState({ open: false });
 
   useEffect(() => {
     const fetchTransaction = async () => {
@@ -65,11 +67,14 @@ export default function TransactionDetail() {
   }
 
   const handleRefund = async () => {
-    if (!window.confirm(`Refund transaction ${tx.receiptNumber}?\n\nThis will restore inventory for all ${tx.items?.length || 0} items. This action cannot be undone.`)) return;
+    setConfirmRefund({ open: true });
+  };
+
+  const executeRefund = async () => {
+    setConfirmRefund({ open: false });
     try {
       await transactionsAPI.refund(tx.id);
       toast.success('Transaction refunded successfully');
-      // Update local state to reflect the refund
       setTx(prev => ({ ...prev, status: 'refunded' }));
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to refund transaction');
@@ -144,7 +149,7 @@ export default function TransactionDetail() {
           <tbody>
             ${tx.items?.map(item => `
               <tr>
-                <td>${item.productName}</td>
+                <td>${item.productName} <span style="font-size:10px;color:${item.pricingType === 'wholesale' ? '#9333ea' : '#2563eb'}">(${item.pricingType === 'wholesale' ? 'W' : 'R'})</span></td>
                 <td class="center">${item.quantity}</td>
                 <td class="right">${formatCurrency(item.unitPrice)}</td>
                 <td class="right">${formatCurrency(item.totalPrice)}</td>
@@ -166,8 +171,8 @@ export default function TransactionDetail() {
         </div>
         <hr class="divider" />
         <div class="footer">
-          <p>Thank you for your purchase!</p>
-          <p style="font-size:10px; margin-top:4px;">Transaction Detail · ${tx.receiptNumber}</p>
+          <p>Thank you and come back again!</p>
+          <p style="font-size:10px; margin-top:4px;">Transaction Detail &middot; ${tx.receiptNumber}</p>
         </div>
         <div style="text-align:center; margin-top:16px;">
           <button onclick="window.print()" style="padding:8px 24px; font-size:14px; cursor:pointer; border:1px solid #ccc; border-radius:6px; background:#2563eb; color:#fff;">🖨️ Print</button>
@@ -244,7 +249,7 @@ export default function TransactionDetail() {
         {/* Payment Details */}
         <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
           <h3 className="font-semibold mb-4 flex items-center gap-2">
-            <span>💳</span> Payment Details
+            <img src="./icons/card-icon.png" alt="" className="w-5 h-5" /> Payment Details
           </h3>
           <div className="space-y-3">
             <div className="flex justify-between text-sm">
@@ -307,7 +312,7 @@ export default function TransactionDetail() {
         {/* Cashier Info */}
         <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
           <h3 className="font-semibold mb-4 flex items-center gap-2">
-            <span>👤</span> Cashier Information
+            <img src="./icons/cashier-icon.png" alt="" className="w-5 h-5" /> Cashier Information
           </h3>
           <div className="space-y-3">
             <div className="flex justify-between text-sm">
@@ -326,7 +331,7 @@ export default function TransactionDetail() {
 
           {/* Summary Stats */}
           <h3 className="font-semibold mt-6 mb-3 flex items-center gap-2">
-            <span>📊</span> Summary
+            <img src="./icons/report-icon.png" alt="" className="w-5 h-5" /> Summary
           </h3>
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 text-center">
@@ -347,7 +352,7 @@ export default function TransactionDetail() {
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
           <h3 className="font-semibold flex items-center gap-2">
-            <span>🛒</span> Items ({tx.items?.length || 0})
+            <img src="./icons/product-icon.png" alt="" className="w-5 h-5" /> Items ({tx.items?.length || 0})
           </h3>
         </div>
         <div className="overflow-x-auto">
@@ -365,7 +370,12 @@ export default function TransactionDetail() {
               {tx.items?.map((item, index) => (
                 <tr key={item.id} className="border-t border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30">
                   <td className="py-3 px-4 text-gray-500">{index + 1}</td>
-                  <td className="py-3 px-4 font-medium">{item.productName}</td>
+                  <td className="py-3 px-4 font-medium">
+                    {item.productName}
+                    <span className={`ml-1 text-xs ${item.pricingType === "wholesale" ? "text-purple-500" : "text-blue-500"}`}>
+                      ({item.pricingType === "wholesale" ? "Wholesale" : "Retail"})
+                    </span>
+                  </td>
                   <td className="py-3 px-4 text-center">{item.quantity}</td>
                   <td className="py-3 px-4 text-right">{formatCurrency(item.unitPrice)}</td>
                   <td className="py-3 px-4 text-right font-medium">{formatCurrency(item.totalPrice)}</td>
@@ -398,10 +408,7 @@ export default function TransactionDetail() {
             onClick={handlePrint}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm flex items-center gap-2"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 18v4h12v-4M8 14h8" />
-            </svg>
-            🖨️ Print Receipt
+            <img src="./icons/email-icon.png" alt="Print" className="w-4 h-4" /> Print Receipt
           </button>
         </div>
         {user?.role === 'admin' && tx.status === 'completed' && (
@@ -409,13 +416,20 @@ export default function TransactionDetail() {
             onClick={handleRefund}
             className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 text-sm flex items-center gap-2"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            ↩️ Refund Transaction
+            <img src="./icons/refund-icon.png" alt="Refund" className="w-4 h-4" /> Refund Transaction
           </button>
-        )}
+        )        }
       </div>
+
+      <ConfirmDialog
+        open={confirmRefund.open}
+        title="Refund Transaction"
+        icon="↩️"
+        confirmText="Refund"
+        message={`Refund transaction ${tx?.receiptNumber}? This will restore inventory for all ${tx?.items?.length || 0} items. This action cannot be undone.`}
+        onConfirm={executeRefund}
+        onCancel={() => setConfirmRefund({ open: false })}
+      />
     </div>
   );
 }

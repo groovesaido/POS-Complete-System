@@ -1,3 +1,10 @@
 node_modules
 resources
 .env
+dist
+
+# Frontend env (license server URL)
+frontend/.env
+
+# License server env (contains credentials)
+licensing/server/.env

@@ -1,0 +1,21 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model License {
+  id            Int      @id @default(autoincrement())
+  key           String   @unique
+  customerName  String
+  customerEmail String
+  customerPhone String?
+  machineId     String?
+  plan          String   @default("standard") // standard | premium
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  status        String   @default("active") // active | expired | suspended
+}

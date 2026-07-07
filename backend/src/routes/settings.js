@@ -86,13 +86,33 @@ router.put('/', authenticate, authorizeAdmin, async (req, res) => {
   }
 });
 
+// Helper: determine writable database and backup directories (mirrors index.js)
+function getStoragePaths() {
+  const fs = require('fs');
+  const path = require('path');
+
+  const dbDir = process.env.USER_DATA_DIR
+    ? process.env.USER_DATA_DIR
+    : path.join(__dirname, '../../prisma');
+  const dbPath = path.join(dbDir, 'dev.db');
+  const backupDir = process.env.USER_DATA_DIR
+    ? path.join(process.env.USER_DATA_DIR, 'backups')
+    : path.join(__dirname, '../../backups');
+
+  return { dbDir, dbPath, backupDir };
+}
+
 // Backup database
 router.post('/backup', authenticate, authorizeAdmin, async (req, res) => {
   try {
     const fs = require('fs');
     const path = require('path');
-    const dbPath = path.join(__dirname, '../../prisma/dev.db');
-    const backupDir = path.join(__dirname, '../../backups');
+
+    const { dbPath, backupDir } = getStoragePaths();
+
+    if (!fs.existsSync(dbPath)) {
+      return res.status(404).json({ error: 'Database file not found at: ' + dbPath });
+    }
 
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
@@ -106,6 +126,122 @@ router.post('/backup', authenticate, authorizeAdmin, async (req, res) => {
     res.json({ message: 'Backup created successfully.', path: backupPath });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create backup.' });
+  }
+});
+
+// List available backup files
+router.get('/backups', authenticate, authorizeAdmin, async (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const { backupDir } = getStoragePaths();
+
+    if (!fs.existsSync(backupDir)) {
+      return res.json({ backups: [] });
+    }
+
+    const files = fs.readdirSync(backupDir).filter((f) => f.endsWith('.db'));
+
+    const backups = files.map((filename) => {
+      const filePath = path.join(backupDir, filename);
+      const stat = fs.statSync(filePath);
+      return {
+        filename,
+        size: stat.size,
+        createdAt: stat.birthtime || stat.mtime,
+        modifiedAt: stat.mtime,
+      };
+    });
+
+    // Sort newest first
+    backups.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({ backups });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to list backups.' });
+  }
+});
+
+// Restore database from a backup file
+router.post('/restore', authenticate, authorizeAdmin, async (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const { PrismaClient } = require('@prisma/client');
+
+    const { filename } = req.body;
+    if (!filename || typeof filename !== 'string') {
+      return res.status(400).json({ error: 'Backup filename is required.' });
+    }
+
+    // Prevent path traversal — only allow filenames in the backupDir
+    const { dbPath, backupDir } = getStoragePaths();
+    const backupPath = path.resolve(path.join(backupDir, path.basename(filename)));
+
+    // Normalize both paths for cross-platform comparison (Windows uses backslashes)
+    const normalizedBackup = backupPath.replace(/\\/g, '/');
+    const normalizedDir = backupDir.replace(/\\/g, '/');
+    if (!normalizedBackup.startsWith(normalizedDir)) {
+      return res.status(400).json({ error: 'Invalid backup filename.' });
+    }
+
+    if (!fs.existsSync(backupPath)) {
+      return res.status(404).json({ error: 'Backup file not found: ' + filename });
+    }
+
+    if (!fs.existsSync(dbPath)) {
+      return res.status(404).json({ error: 'Database file not found. Cannot restore.' });
+    }
+
+    // Disconnect Prisma to release file locks
+    const prisma = req.app.locals.prisma;
+    await prisma.$disconnect();
+
+    // Copy backup over the current database
+    fs.copyFileSync(backupPath, dbPath);
+
+    // Create a fresh Prisma client connected to the restored database
+    const dbUrl = `file:${dbPath.replace(/\\/g, '/')}`;
+    const newPrisma = new PrismaClient({
+      datasources: { db: { url: dbUrl } },
+    });
+
+    // Verify the restored database is valid by running a basic query
+    try {
+      await newPrisma.$queryRaw`SELECT 1`;
+    } catch {
+      // If verification fails, attempt to reconnect the old client
+      await newPrisma.$disconnect();
+      const fallbackPrisma = new PrismaClient({
+        datasources: { db: { url: dbUrl } },
+      });
+      req.app.locals.prisma = fallbackPrisma;
+      return res.status(500).json({
+        error: 'Backup file appears corrupted or incompatible. Database was NOT restored.',
+        needsRestart: true,
+      });
+    }
+
+    // Swap the Prisma client instance
+    req.app.locals.prisma = newPrisma;
+
+    // Log the restore activity
+    await newPrisma.activityLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'RESTORE_DATABASE',
+        details: `Restored database from backup: ${filename}`,
+      },
+    }).catch(() => {}); // Non-critical
+
+    res.json({
+      message: `Database restored from "${filename}".`, // Shortened — no crash on Windows console
+      filename,
+      size: fs.statSync(backupPath).size,
+      needsRestart: false,
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to restore database: ' + error.message });
   }
 });
 

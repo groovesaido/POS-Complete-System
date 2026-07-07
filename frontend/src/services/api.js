@@ -53,6 +53,8 @@ export const authAPI = {
   login: (data) => api.post("/auth/login", data),
   me: () => api.get("/auth/me"),
   changePassword: (data) => api.post("/auth/change-password", data),
+  needsSetup: () => api.get("/auth/needs-setup"),
+  setup: (data) => api.post("/auth/setup", data),
 };
 
 // Products
@@ -95,6 +97,8 @@ export const transactionsAPI = {
   update: (id, data) => api.patch(`/transactions/${id}`, data),
   completePending: (id, data) => api.post(`/transactions/${id}/complete`, data),
   refund: (id) => api.post(`/transactions/${id}/refund`),
+  saveDraft: (data) => api.post("/transactions/save-draft", data),
+  deleteDraft: (id) => api.delete(`/transactions/${id}`),
 };
 
 // Reports
@@ -119,6 +123,8 @@ export const settingsAPI = {
   getAll: () => api.get("/settings"),
   update: (data) => api.put("/settings", data),
   backup: () => api.post("/settings/backup"),
+  listBackups: () => api.get("/settings/backups"),
+  restore: (filename) => api.post("/settings/restore", { filename }),
   getNetworkInfo: () => api.get("/settings/network-info"),
 };
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { usersAPI } from '../services/api';
 import toast from 'react-hot-toast';
+import ConfirmDialog from "../components/ConfirmDialog";
 
 export default function Users() {
   const [users, setUsers] = useState([]);
@@ -8,6 +9,7 @@ export default function Users() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: '', username: '', email: '', password: '', role: 'cashier' });
+  const [confirmDialog, setConfirmDialog] = useState({ open: false, user: null, action: '' });
 
   const fetchUsers = async () => {
     try {
@@ -50,9 +52,16 @@ export default function Users() {
     }
   };
 
-  const handleToggleStatus = async (user) => {
+  const handleToggleClick = (user) => {
     const action = user.status === 'active' ? 'deactivate' : 'activate';
-    if (!window.confirm(`Are you sure you want to ${action} "${user.name}"?`)) return;
+    setConfirmDialog({ open: true, user, action });
+  };
+
+  const handleToggleConfirm = async () => {
+    const user = confirmDialog.user;
+    const action = confirmDialog.action;
+    if (!user) return;
+    setConfirmDialog({ open: false, user: null, action: '' });
     try {
       await usersAPI.update(user.id, { status: user.status === 'active' ? 'inactive' : 'active' });
       toast.success(`User ${action}d`);
@@ -60,6 +69,10 @@ export default function Users() {
     } catch (err) {
       toast.error('Failed to update user');
     }
+  };
+
+  const handleToggleCancel = () => {
+    setConfirmDialog({ open: false, user: null, action: '' });
   };
 
   return (
@@ -110,9 +123,11 @@ export default function Users() {
                   </td>
                   <td className="py-3 px-4">
                     <div className="flex justify-center gap-2">
-                      <button onClick={() => openEdit(user)} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="Edit">✏️</button>
-                      <button onClick={() => handleToggleStatus(user)} className={`p-1.5 rounded ${user.status === 'active' ? 'text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30' : 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30'}`} title={user.status === 'active' ? 'Deactivate' : 'Activate'}>
-                        {user.status === 'active' ? '🔒' : '🔓'}
+                      <button onClick={() => openEdit(user)} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="Edit">
+                        <img src="./icons/edit-icon.png" alt="Edit" className="w-5 h-5" />
+                      </button>
+                      <button onClick={() => handleToggleClick(user)} className={`p-1.5 rounded ${user.status === 'active' ? 'text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30' : 'text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30'}`} title={user.status === 'active' ? 'Deactivate' : 'Activate'}>
+                        {user.status === 'active' ? <img src="./icons/delete-icon.png" alt="Deactivate" className="w-4 h-4" /> : <img src="./icons/cashier-icon.png" alt="Activate" className="w-4 h-4" />}
                       </button>
                     </div>
                   </td>
@@ -122,6 +137,16 @@ export default function Users() {
           </table>
         </div>
       </div>
+
+      {/* Confirmation Dialog for Activate/Deactivate */}
+      <ConfirmDialog
+        open={confirmDialog.open}
+        title={confirmDialog.action === 'deactivate' ? 'Deactivate User' : 'Activate User'}
+        message={`Are you sure you want to ${confirmDialog.action} "${confirmDialog.user?.name}"?`}
+        confirmText={confirmDialog.action === 'deactivate' ? 'Deactivate' : 'Activate'}
+        onConfirm={handleToggleConfirm}
+        onCancel={handleToggleCancel}
+      />
 
       {showModal && (
         <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" onClick={() => setShowModal(false)}>

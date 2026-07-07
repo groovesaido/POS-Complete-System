@@ -4,37 +4,14 @@ const bcrypt = require('bcryptjs');
 const prisma = new PrismaClient();
 
 async function main() {
-  // Create default users
-  const adminPassword = await bcrypt.hash('admin123', 10);
-  const cashierPassword = await bcrypt.hash('cashier123', 10);
+  // ── Users ──
+  // No default users are created. The first-time setup flow via the signup
+  // page (POST /api/auth/setup) creates the initial admin user with the
+  // store name and phone number provided by the user.
+  const userCount = await prisma.user.count();
+  console.log(`[Seed] Existing users: ${userCount} (first-time setup creates the admin user via signup)`);
 
-  await prisma.user.upsert({
-    where: { username: 'admin' },
-    update: {},
-    create: {
-      name: 'System Admin',
-      username: 'admin',
-      email: 'admin@pos.com',
-      password: adminPassword,
-      role: 'admin',
-      status: 'active',
-    },
-  });
-
-  await prisma.user.upsert({
-    where: { username: 'cashier' },
-    update: {},
-    create: {
-      name: 'John Cashier',
-      username: 'cashier',
-      email: 'cashier@pos.com',
-      password: cashierPassword,
-      role: 'cashier',
-      status: 'active',
-    },
-  });
-
-  // Create sample categories
+  // ── Categories ──
   const categories = [
     { name: 'Beverages', description: 'Drinks and beverages' },
     { name: 'Food', description: 'Food items and snacks' },
@@ -51,7 +28,7 @@ async function main() {
     });
   }
 
-  // Create sample products
+  // ── Products ──
   const catBeverages = await prisma.category.findUnique({ where: { name: 'Beverages' } });
   const catFood = await prisma.category.findUnique({ where: { name: 'Food' } });
   const catElectronics = await prisma.category.findUnique({ where: { name: 'Electronics' } });
@@ -87,15 +64,17 @@ async function main() {
     });
   }
 
-  // Create default settings
+  // ── Settings ──
+  // store_name and store_phone are intentionally omitted — they are set by
+  // the user during first-time signup (POST /api/auth/setup).
   const settings = [
-    { key: 'store_name', value: 'My POS Store' },
-    { key: 'store_phone', value: '+254700000000' },
     { key: 'store_email', value: 'info@mystore.com' },
     { key: 'store_address', value: '123 Main Street, Nairobi' },
     { key: 'tax_rate', value: '16' },
     { key: 'currency', value: 'KES' },
     { key: 'sound_enabled', value: 'true' },
+    { key: 'auto_backup_enabled', value: 'true' },
+    { key: 'auto_backup_retention_days', value: '30' },
   ];
 
   for (const setting of settings) {
@@ -107,8 +86,7 @@ async function main() {
   }
 
   console.log('Seed data created successfully!');
-  console.log('Default Admin: username=admin, password=admin123');
-  console.log('Default Cashier: username=cashier, password=cashier123');
+  console.log('Default admin user is NOT created — use the signup page on first app launch.');
 }
 
 main()

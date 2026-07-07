@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   productsAPI,
   categoriesAPI,
@@ -8,12 +9,15 @@ import {
   getUploadUrl,
 } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
+import { useLicense } from "../contexts/LicenseContext";
 import useMobileScanner from "../hooks/useMobileScanner";
 import { playCheckoutSound } from "../utils/sound";
 import toast from "react-hot-toast";
 
 export default function POS() {
   const { user } = useAuth();
+  const { licenseDetails } = useLicense();
+  const licensePlan = licenseDetails?.plan || "standard";
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [cart, setCart] = useState([]);
@@ -27,6 +31,83 @@ export default function POS() {
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [amountPaid, setAmountPaid] = useState("");
   const [discount, setDiscount] = useState(0);
+
+  // Resuming a saved draft
+  const [searchParams] = useSearchParams();
+  const [resumingDraftId, setResumingDraftId] = useState(null); // persistent draft ID for cleanup after checkout
+
+  useEffect(() => {
+    const draftId = searchParams.get("resumeDraft");
+    if (!draftId) return;
+
+    const parsedId = parseInt(draftId);
+    setResumingDraftId(parsedId);
+
+    (async () => {
+      try {
+        const { data: draft } = await transactionsAPI.getById(draftId);
+        if (draft.status !== "draft") {
+          toast.error("This draft is no longer available.");
+          setResumingDraftId(null);
+          return;
+        }
+
+        // Validate stock for each item
+        const stockWarnings = [];
+        for (const item of draft.items) {
+          if (item.productId) {
+            try {
+              const { data: product } = await productsAPI.getById(item.productId);
+              if (product.quantity < item.quantity) {
+                stockWarnings.push(
+                  `${item.productName}: only ${product.quantity} available (need ${item.quantity})`,
+                );
+              }
+            } catch {
+              stockWarnings.push(`${item.productName}: product not found`);
+            }
+          }
+        }
+
+        // Load items into cart
+        const cartItems = draft.items.map((item) => ({
+          productId: item.productId,
+          name: item.productName,
+          imageUrl: null, // will be resolved lazily
+          unitPrice: item.unitPrice,
+          quantity: item.quantity,
+          totalPrice: item.totalPrice,
+          stock: 9999, // optimistic; stock check above would warn
+          pricingType: item.pricingType || "retail",
+        }));
+
+        setCart(cartItems);
+        if (draft.discount > 0) setDiscount(draft.discount);
+
+        // Show stock warnings if any
+        if (stockWarnings.length > 0) {
+          toast.error(
+            <div>
+              <strong>Stock issues:</strong>
+              <ul className="list-disc pl-4 mt-1 text-xs">
+                {stockWarnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>,
+            { duration: 8000 },
+          );
+        }
+
+        toast.success(`Draft #${draft.receiptNumber} loaded — ready to checkout`);
+        setShowCheckout(true);
+      } catch (err) {
+        toast.error("Failed to load draft: " + (err.response?.data?.error || err.message));
+      } finally {
+        // resumingDraftId stays set until checkout completes or fails
+        // Clean the URL param so refreshing doesn't re-load the draft
+        window.history.replaceState({}, "", "/pos");
+      }
+    })();
+  }, []);
 
   // Retail / Wholesale pricing toggle
   const [pricingType, setPricingType] = useState("retail");
@@ -218,14 +299,14 @@ export default function POS() {
   const addToCart = (product) => {
     const price = unitPrice(product);
     setCart((prev) => {
-      const existing = prev.find((item) => item.productId === product.id);
+      const existing = prev.find((item) => item.productId === product.id && item.pricingType === pricingType);
       if (existing) {
         if (existing.quantity >= product.quantity) {
           toast.error(`Only ${product.quantity} available`);
           return prev;
         }
         return prev.map((item) =>
-          item.productId === product.id
+          item.productId === product.id && item.pricingType === pricingType
             ? {
                 ...item,
                 quantity: item.quantity + 1,
@@ -256,14 +337,14 @@ export default function POS() {
     searchRef.current?.focus();
   };
 
-  const updateQuantity = (productId, qty) => {
+  const updateQuantity = (productId, qty, pricingType) => {
     if (qty <= 0) {
-      removeFromCart(productId);
+      removeFromCart(productId, pricingType);
       return;
     }
     setCart((prev) =>
       prev.map((item) => {
-        if (item.productId === productId) {
+        if (item.productId === productId && item.pricingType === pricingType) {
           if (qty > item.stock) {
             toast.error(`Only ${item.stock} available`);
             return item;
@@ -275,8 +356,12 @@ export default function POS() {
     );
   };
 
-  const removeFromCart = (productId) => {
-    setCart((prev) => prev.filter((item) => item.productId !== productId));
+  const removeFromCart = (productId, pricingType) => {
+    setCart((prev) =>
+      pricingType !== undefined
+        ? prev.filter((item) => !(item.productId === productId && item.pricingType === pricingType))
+        : prev.filter((item) => item.productId !== productId)
+    );
   };
 
   const clearCart = () => {
@@ -298,6 +383,7 @@ export default function POS() {
     paymentMethod === "mpesa" ? Math.max(0, total - mpesaAmountVal) : 0;
   const isSplit =
     paymentMethod === "mpesa" && mpesaAmountVal > 0 && mpesaAmountVal < total;
+  const isPremiumPlan = licensePlan === "premium";
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -381,15 +467,54 @@ export default function POS() {
       toast.error("Insufficient payment");
       return;
     }
-    if (paymentMethod === "mpesa" && !mpesaPhone.trim()) {
+    if (paymentMethod === "mpesa" && isPremiumPlan && !mpesaPhone.trim()) {
       toast.error("Please enter customer phone number");
       return;
     }
 
     setCheckoutLoading(true);
 
-    // M-Pesa flow: create transaction FIRST, then initiate STK push
+    // M-Pesa flow: create transaction FIRST, then initiate STK push (premium) or complete immediately (standard)
     if (paymentMethod === "mpesa") {
+      // Standard plan: just record the payment as M-Pesa, no STK push
+      if (!isPremiumPlan) {
+        try {
+          const { data } = await transactionsAPI.create({
+            items: cart.map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+              pricingType: item.pricingType,
+            })),
+            payments: [{ method: "mpesa", amount: parseFloat(amountPaid || total) }],
+            discount: discountAmount,
+            tax,
+            notes: "",
+            forceCompleteMpesa: true,
+          });
+
+          // Clean up the draft if this was a resumed draft
+          if (resumingDraftId) {
+            transactionsAPI.deleteDraft(resumingDraftId).catch(() => {});
+            setResumingDraftId(null);
+          }
+
+          setShowReceipt(data);
+          if (soundEnabled) {
+            playCheckoutSound();
+          }
+          setCart([]);
+          setAmountPaid("");
+          setDiscount(0);
+          setShowCheckout(false);
+          loadProducts();
+          toast.success("Sale completed! (M-Pesa)");
+        } catch (err) {
+          toast.error(err.response?.data?.error || "Checkout failed");
+        } finally {
+          setCheckoutLoading(false);
+        }
+        return;
+      }
       // Basic Kenyan phone validation
       const cleanedPhone = mpesaPhone.replace(/[\s\-]/g, "");
       if (!/^(\+?254|0)[17]\d{8}$/.test(cleanedPhone)) {
@@ -421,6 +546,12 @@ export default function POS() {
             mpesaAmount: mpesaAmountVal,
             cashAmount: cashAmountVal,
           });
+
+          // Clean up the draft if this was a resumed draft
+          if (resumingDraftId) {
+            transactionsAPI.deleteDraft(resumingDraftId).catch(() => {});
+            setResumingDraftId(null);
+          }
 
           setMpesaTxId(tx.id);
 
@@ -469,6 +600,12 @@ export default function POS() {
 
           // Track the transaction ID for cleanup on cancel
           setMpesaTxId(tx.id);
+
+          // Clean up the draft if this was a resumed draft
+          if (resumingDraftId) {
+            transactionsAPI.deleteDraft(resumingDraftId).catch(() => {});
+            setResumingDraftId(null);
+          }
 
           // Step 2: Initiate STK push
           const { data: stkResult } = await mpesaAPI.stkPush({
@@ -521,6 +658,12 @@ export default function POS() {
         tax,
         notes: "",
       });
+      // Clean up the draft if this was a resumed draft
+      if (resumingDraftId) {
+        transactionsAPI.deleteDraft(resumingDraftId).catch(() => {});
+        setResumingDraftId(null);
+      }
+
       setShowReceipt(data);
       // Play cash register sound (if enabled)
       if (soundEnabled) {
@@ -563,6 +706,37 @@ export default function POS() {
     setMpesaProcessing(false);
     setMpesaError("");
     // Keep the pending transaction alive; don't cancel
+  };
+
+  // Save current cart as a draft transaction
+  const handleSaveDraft = async () => {
+    if (cart.length === 0) {
+      toast.error("Cart is empty");
+      return;
+    }
+
+    try {
+      const { data: draft } = await transactionsAPI.saveDraft({
+        items: cart.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+          pricingType: item.pricingType,
+        })),
+        discount: discountAmount,
+        tax,
+      });
+
+      toast.success(
+        `✅ Draft #${draft.receiptNumber} saved! Find it in Transactions to resume.`,
+        { duration: 5000 },
+      );
+      setCart([]);
+      setDiscount(0);
+      setAmountPaid("");
+      setShowCheckout(false);
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Failed to save draft");
+    }
   };
 
   // Close checkout modal - cleanup M-Pesa state
@@ -621,7 +795,12 @@ export default function POS() {
             <tbody>
               {tx.items?.map((item, i) => (
                 <tr key={i}>
-                  <td className="py-1">{item.productName}</td>
+                  <td className="py-1">
+                      {item.productName}
+                      <span className={`ml-1 ${item.pricingType === "wholesale" ? "text-purple-500" : "text-blue-500"}`}>
+                        ({item.pricingType === "wholesale" ? "W" : "R"})
+                      </span>
+                  </td>
                   <td className="py-1 text-center">{item.quantity}</td>
                   <td className="py-1 text-right">
                     {formatCurrency(item.unitPrice)}
@@ -690,7 +869,7 @@ export default function POS() {
           </div>
           <hr className="border-dashed my-2" />
           <p className="text-xs text-center text-gray-500">
-            Thank you for your purchase!
+            Thank you and come back again!
           </p>
           <div className="flex justify-center gap-3 mt-3 no-print">
             <button
@@ -827,23 +1006,23 @@ export default function POS() {
           <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-0.5 shrink-0">
             <button
               onClick={() => setPricingType("retail")}
-              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
                 pricingType === "retail"
                   ? "bg-white dark:bg-gray-600 text-blue-600 dark:text-blue-400 shadow-sm"
                   : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
               }`}
             >
-              🏪 Retail
+              <img src="./icons/retail-icon.png" alt="" className="w-4 h-4" /> Retail
             </button>
             <button
               onClick={() => setPricingType("wholesale")}
-              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
                 pricingType === "wholesale"
                   ? "bg-white dark:bg-gray-600 text-purple-600 dark:text-purple-400 shadow-sm"
                   : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
               }`}
             >
-              📦 Wholesale
+              <img src="./icons/wholesale-icon.png" alt="" className="w-4 h-4" /> Wholesale
             </button>
           </div>
 
@@ -888,17 +1067,20 @@ export default function POS() {
                   className="bg-white dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-md transition-all text-left group"
                 >
                   {/* Product Image */}
-                  <div className="w-full h-24 rounded-lg mb-2 overflow-hidden bg-gray-50 dark:bg-gray-700 flex items-center justify-center">
+                  <div className="w-full h-24 rounded-lg mb-2 overflow-hidden bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-700 dark:to-gray-800 flex items-center justify-center ring-1 ring-inset ring-gray-200 dark:ring-gray-600">
                     {product.imageUrl ? (
                       <img
                         src={getUploadUrl(product.imageUrl)}
                         alt={product.name}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        className="w-full h-full object-contain p-1 group-hover:scale-105 transition-transform duration-300"
                       />
                     ) : (
-                      <span className="text-3xl group-hover:scale-110 transition-transform">
-                        📦
-                      </span>
+                      <div className="flex flex-col items-center gap-0.5 opacity-40 group-hover:opacity-60 transition-opacity">
+                        <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21z" />
+                        </svg>
+                        <span className="text-[10px] text-gray-400 font-medium">No Image</span>
+                      </div>
                     )}
                   </div>
                   <p className="font-medium text-sm truncate">{product.name}</p>
@@ -931,7 +1113,7 @@ export default function POS() {
       <div className="w-full lg:w-96 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col">
         <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
           <div>
-            <h2 className="font-bold text-lg">🛒 Cart</h2>
+            <h2 className="font-bold text-lg flex items-center gap-2"><img src="./icons/cart-icon.png" alt="" className="w-5 h-5" /> Cart</h2>
             <p className="text-sm text-gray-500">{cart.length} items</p>
           </div>
           {cart.length > 0 && (
@@ -944,66 +1126,72 @@ export default function POS() {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        <div className="flex-1 overflow-y-auto p-4 space-y-2 cart-scrollbar">
           {cart.length === 0 ? (
             <div className="text-center py-12 text-gray-400">
-              <p className="text-4xl mb-2">🛒</p>
+              <img src="./icons/cart-icon.png" alt="" className="w-12 h-12 mx-auto mb-2 opacity-50" />
               <p className="text-sm">Cart is empty</p>
               <p className="text-xs">Click products to add</p>
             </div>
           ) : (
             cart.map((item) => (
               <div
-                key={item.productId}
-                className="flex items-center gap-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3"
+                key={`${item.productId}-${item.pricingType}`}
+                className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 space-y-2"
               >
-                <div className="w-10 h-10 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-600 flex items-center justify-center shrink-0">
-                  {item.imageUrl ? (
-                    <img
-                      src={getUploadUrl(item.imageUrl)}
-                      alt={item.name}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <span className="text-lg">📦</span>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{item.name}</p>
-                  <p className="text-xs text-gray-500">
-                    KSh {item.unitPrice.toLocaleString()} each
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      updateQuantity(item.productId, item.quantity - 1)
-                    }
-                    className="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center hover:bg-gray-300 dark:hover:bg-gray-500 font-bold text-sm"
-                  >
-                    -
-                  </button>
-                  <span className="w-8 text-center font-medium text-sm">
-                    {item.quantity}
-                  </span>
-                  <button
-                    onClick={() =>
-                      updateQuantity(item.productId, item.quantity + 1)
-                    }
-                    className="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center hover:bg-gray-300 dark:hover:bg-gray-500 font-bold text-sm"
-                  >
-                    +
-                  </button>
-                </div>
-                <p className="font-medium text-sm w-20 text-right">
-                  KSh {item.totalPrice.toLocaleString()}
+                {/* Product name at top — smaller font so whole name is visible */}
+                <p className="text-xs font-medium leading-tight">
+                  {item.name}
                 </p>
-                <button
-                  onClick={() => removeFromCart(item.productId)}
-                  className="text-red-400 hover:text-red-600 text-sm"
-                >
-                  ✕
-                </button>
+                {/* Bottom row: image, quantity controls, prices, remove */}
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 flex items-center justify-center shrink-0 ring-1 ring-inset ring-gray-200 dark:ring-gray-600">
+                    {item.imageUrl ? (
+                      <img
+                        src={getUploadUrl(item.imageUrl)}
+                        alt={item.name}
+                        className="w-full h-full object-contain p-0.5"
+                      />
+                    ) : (
+                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21z" />
+                        </svg>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() =>
+                        updateQuantity(item.productId, item.quantity - 1, item.pricingType)
+                      }
+                      className="w-6 h-6 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center hover:bg-gray-300 dark:hover:bg-gray-500 font-bold text-xs"
+                    >
+                      -
+                    </button>
+                    <span className="w-7 text-center font-medium text-xs">
+                      {item.quantity}
+                    </span>
+                    <button
+                      onClick={() =>
+                        updateQuantity(item.productId, item.quantity + 1, item.pricingType)
+                      }
+                      className="w-6 h-6 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center hover:bg-gray-300 dark:hover:bg-gray-500 font-bold text-xs"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span className={`text-[10px] font-medium ml-auto ${item.pricingType === "retail" ? "text-blue-500 dark:text-blue-400" : "text-purple-500 dark:text-purple-400"}`}>
+                    {item.pricingType === "retail" ? "Retail" : "Wholesale"}
+                  </span>
+                  <p className="font-semibold text-xs w-20 text-right shrink-0">
+                    KSh {item.totalPrice.toLocaleString()}
+                  </p>
+                  <button
+                    onClick={() => removeFromCart(item.productId, item.pricingType)}
+                    className="text-red-400 hover:text-red-600 text-xs shrink-0"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
             ))
           )}
@@ -1050,9 +1238,9 @@ export default function POS() {
           <button
             onClick={() => setShowCheckout(true)}
             disabled={cart.length === 0}
-            className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold rounded-lg transition-colors text-lg"
+            className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold rounded-lg transition-colors text-lg flex items-center justify-center gap-2"
           >
-            💳 Checkout (KSh {total.toLocaleString()})
+            <img src="./icons/card-icon.png" alt="" className="w-5 h-5" /> Checkout (KSh {total.toLocaleString()})
           </button>
         </div>
       </div>
@@ -1171,10 +1359,10 @@ export default function POS() {
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    { value: "cash", label: "💵 Cash" },
-                    { value: "mpesa", label: "📱 M-Pesa" },
-                    { value: "debit_card", label: "💳 Debit Card" },
-                    { value: "credit_card", label: "💳 Credit Card" },
+                    { value: "cash", label: "Cash" },
+                    { value: "mpesa", label: "M-Pesa" },
+                    { value: "debit_card", label: "Debit Card" },
+                    { value: "credit_card", label: "Credit Card" },
                   ].map((pm) => (
                     <button
                       key={pm.value}
@@ -1185,12 +1373,15 @@ export default function POS() {
                           setMpesaAmount("");
                         }
                       }}
-                      className={`p-3 rounded-lg border text-sm font-medium transition-colors ${
+                      className={`p-3 rounded-lg border text-sm font-medium transition-colors flex items-center gap-2 ${
                         paymentMethod === pm.value
                           ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400"
                           : "border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
                       }`}
                     >
+                      {pm.value === 'cash' && <img src="./icons/cash-icon.png" alt="" className="w-5 h-5" />}
+                      {pm.value === 'mpesa' && <img src="./icons/phone-icon.png" alt="" className="w-5 h-5" />}
+                      {(pm.value === 'debit_card' || pm.value === 'credit_card') && <img src="./icons/card-icon.png" alt="" className="w-5 h-5" />}
                       {pm.label}
                     </button>
                   ))}
@@ -1210,69 +1401,83 @@ export default function POS() {
                     placeholder="Enter amount"
                     autoFocus
                   />
-                  {parseFloat(amountPaid || 0) >= total && (
-                    <p className="text-sm text-green-600 mt-1">
-                      Change: KSh {change.toLocaleString()}
-                    </p>
-                  )}
+                  <div className="mt-1">
+                    <label className="block text-sm font-medium mb-1">
+                      Change
+                    </label>
+                    <input
+                      type="text"
+                      value={`KSh ${change.toLocaleString()}`}
+                      readOnly
+                      className={`w-full px-4 py-2.5 border rounded-lg bg-gray-100 dark:bg-gray-600 text-lg font-bold outline-none ${
+                        change > 0
+                          ? "border-green-400 text-green-700 dark:text-green-400"
+                          : "border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400"
+                      }`}
+                    />
+                  </div>
                 </div>
               )}
 
               {paymentMethod === "mpesa" && (
                 <div>
-                  <label className="block text-sm font-medium mb-1">
-                    Customer Phone Number
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">🇰🇪</span>
-                    <input
-                      type="tel"
-                      value={mpesaPhone}
-                      onChange={(e) => setMpesaPhone(e.target.value)}
-                      placeholder="0712 345 678"
-                      className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                      autoFocus
-                    />
-                  </div>
-
-                  <label className="block text-sm font-medium mb-1 mt-3">
-                    M-Pesa Amount
-                  </label>
-                  <input
-                    type="number"
-                    value={mpesaAmount}
-                    onChange={(e) => setMpesaAmount(e.target.value)}
-                    placeholder={`Total: KSh ${total.toLocaleString()}`}
-                    className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-lg font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-
-                  {mpesaAmount &&
-                    parseFloat(mpesaAmount || 0) > 0 &&
-                    parseFloat(mpesaAmount) < total && (
-                      <div className="mt-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-                        <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
-                          <span>💵</span>
-                          <span>
-                            Cash to collect:{" "}
-                            <strong>
-                              KSh{" "}
-                              {(
-                                total - parseFloat(mpesaAmount)
-                              ).toLocaleString()}
-                            </strong>
-                          </span>
-                        </div>
-                        <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
-                          The remaining balance will be paid in cash at the
-                          counter.
-                        </p>
+                  {isPremiumPlan && (
+                    <>
+                      <label className="block text-sm font-medium mb-1">
+                        Customer Phone Number
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">🇰🇪</span>
+                        <input
+                          type="tel"
+                          value={mpesaPhone}
+                          onChange={(e) => setMpesaPhone(e.target.value)}
+                          placeholder="0712 345 678"
+                          className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                          autoFocus
+                        />
                       </div>
-                    )}
 
-                  <p className="text-xs text-gray-500 mt-1">
-                    Enter the amount to charge via M-Pesa. Any remaining balance
-                    will be paid in cash.
-                  </p>
+                      <label className="block text-sm font-medium mb-1 mt-3">
+                        M-Pesa Amount
+                      </label>
+                      <input
+                        type="number"
+                        value={mpesaAmount}
+                        onChange={(e) => setMpesaAmount(e.target.value)}
+                        placeholder={`Total: KSh ${total.toLocaleString()}`}
+                        className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-lg font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+
+                      {mpesaAmount &&
+                        parseFloat(mpesaAmount || 0) > 0 &&
+                        parseFloat(mpesaAmount) < total && (
+                          <div className="mt-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                            <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+                              <span>💵</span>
+                              <span>
+                                Cash to collect:{" "}
+                                <strong>
+                                  KSh{" "}
+                                  {(
+                                    total - parseFloat(mpesaAmount)
+                                  ).toLocaleString()}
+                                </strong>
+                              </span>
+                            </div>
+                            <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
+                              The remaining balance will be paid in cash at the
+                              counter.
+                            </p>
+                          </div>
+                        )}
+
+                      <p className="text-xs text-gray-500 mt-1">
+                        Enter the amount to charge via M-Pesa. Any remaining balance
+                        will be paid in cash.
+                      </p>
+                    </>
+                  )}
                   {mpesaStatus === "failed" && (
                     <div className="mt-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-600 dark:text-red-400">
                       {mpesaError || "M-Pesa payment failed. Please try again."}
@@ -1281,7 +1486,15 @@ export default function POS() {
                 </div>
               )}
 
-              <div className="flex justify-end gap-3 pt-2">
+              <div className="flex justify-end gap-3 pt-2 flex-wrap">
+                <button
+                  onClick={handleSaveDraft}
+                  disabled={checkoutLoading}
+                  className="px-4 py-2 border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 flex items-center gap-2"
+                >
+                  <img src="./icons/save-icon.png" alt="" className="w-4 h-4" />
+                  Save Draft
+                </button>
                 <button
                   onClick={closeCheckout}
                   className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
@@ -1296,16 +1509,16 @@ export default function POS() {
                   {checkoutLoading ? (
                     <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
                   ) : paymentMethod === "mpesa" ? (
-                    "📱"
+                    <img src="./icons/phone-icon.png" alt="" className="w-5 h-5" />
                   ) : (
-                    "✅"
+                    <img src="./icons/card-icon.png" alt="" className="w-5 h-5" />
                   )}
                   {checkoutLoading
                     ? paymentMethod === "mpesa"
                       ? "Sending STK Push..."
                       : "Processing..."
                     : paymentMethod === "mpesa"
-                      ? "Send M-Pesa Request"
+                      ? isPremiumPlan ? "Send M-Pesa Request" : "Complete Sale"
                       : "Complete Sale"}
                 </button>
               </div>

@@ -547,8 +547,6 @@ export default function Reports() {
     toast.success('PDF exported successfully!');
   };
 
-  const formatCurrency = (v) => `KSh ${Number(v || 0).toLocaleString()}`;
-
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload?.length) {
       return (
@@ -773,7 +771,7 @@ export default function Reports() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold">Reports</h1>
         <div className="flex gap-2">
-          {data && <button onClick={handleExportPDF} className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">📄 Export PDF</button>}
+          {data && <button onClick={handleExportPDF} className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"><img src="./icons/report-icon.png" alt="" className="w-4 h-4" /> Export PDF</button>}
         </div>
       </div>
 

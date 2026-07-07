@@ -53,6 +53,7 @@ router.post('/', authenticate, async (req, res) => {
         quantity: item.quantity,
         unitPrice,
         totalPrice,
+        pricingType: item.pricingType || 'retail',
       });
     }
 
@@ -68,12 +69,14 @@ router.post('/', authenticate, async (req, res) => {
     const parsedMpesaAmount = mpesaAmount ? parseFloat(mpesaAmount) : null;
     const parsedCashAmount = cashAmount ? parseFloat(cashAmount) : null;
     const isSplitPayment = isMpesa && parsedMpesaAmount !== null && parsedMpesaAmount < total;
+    const forceCompleteMpesa = req.body.forceCompleteMpesa === true;
 
     // Determine initial status:
     // - Full M-Pesa (mpesaAmount = total): pending until callback
     // - Split payment (mpesaAmount < total): completed immediately (cash collected)
     // - Cash/card: completed immediately
-    const initialStatus = isSplitPayment ? 'completed' : (isMpesa ? 'pending_mpesa' : 'completed');
+    // - forceCompleteMpesa (standard plan): completed immediately (record M-Pesa, no STK push)
+    const initialStatus = isSplitPayment || forceCompleteMpesa ? 'completed' : (isMpesa ? 'pending_mpesa' : 'completed');
 
     // Build notes with split payment info if applicable
     let transactionNotes = notes || '';
@@ -112,7 +115,8 @@ router.post('/', authenticate, async (req, res) => {
 
     // For cash/card and split payments - decrement inventory immediately
     // For full M-Pesa - decrement inventory only when callback confirms
-    const shouldDeductInventory = !isMpesa || isSplitPayment;
+    // For forceCompleteMpesa (standard plan) - decrement immediately (no STK push)
+    const shouldDeductInventory = !isMpesa || isSplitPayment || forceCompleteMpesa;
     if (shouldDeductInventory) {
       for (const item of transactionItems) {
         const product = await prisma.product.findUnique({ where: { id: item.productId } });
@@ -274,6 +278,7 @@ router.patch('/:id', authenticate, async (req, res) => {
           quantity: item.quantity,
           unitPrice,
           totalPrice,
+          pricingType: item.pricingType || 'retail',
         });
       }
 
@@ -449,6 +454,120 @@ router.post('/:id/refund', authenticate, authorizeAdmin, async (req, res) => {
   } catch (error) {
     console.error('Refund error:', error);
     res.status(500).json({ error: 'Failed to refund transaction.' });
+  }
+});
+
+// ── Save Draft Transaction ──
+// Saves the current cart as a draft with status 'draft'.
+// Does NOT deduct inventory — that happens when the draft is completed.
+router.post('/save-draft', authenticate, async (req, res) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const { items, discount = 0, tax = 0, notes } = req.body;
+
+    if (!items || items.length === 0) {
+      return res.status(400).json({ error: 'Cart is empty.' });
+    }
+
+    // Validate products and calculate totals
+    let subtotal = 0;
+    const transactionItems = [];
+
+    for (const item of items) {
+      const product = await prisma.product.findUnique({ where: { id: item.productId } });
+      if (!product) {
+        return res.status(400).json({ error: `Product ID ${item.productId} not found.` });
+      }
+      // Do NOT check stock here — just warn if insufficient
+      const unitPrice = item.pricingType === 'wholesale' ? product.wholesalePrice : product.retailPrice;
+      const totalPrice = unitPrice * item.quantity;
+      subtotal += totalPrice;
+
+      transactionItems.push({
+        productId: product.id,
+        productName: product.name,
+        quantity: item.quantity,
+        unitPrice,
+        totalPrice,
+        pricingType: item.pricingType || 'retail',
+      });
+    }
+
+    const taxAmount = parseFloat(tax) || 0;
+    const discountAmount = parseFloat(discount) || 0;
+    const total = subtotal + taxAmount - discountAmount;
+
+    // Create draft transaction (status = 'draft', no inventory deduction)
+    const draft = await prisma.transaction.create({
+      data: {
+        receiptNumber: generateReceiptNumber(),
+        invoiceNumber: generateInvoiceNumber(),
+        subtotal,
+        tax: taxAmount,
+        discount: discountAmount,
+        total,
+        paymentMethod: 'draft',
+        amountPaid: 0,
+        change: 0,
+        status: 'draft',
+        cashierId: req.user.id,
+        notes: notes || 'Draft transaction',
+        items: {
+          create: transactionItems,
+        },
+      },
+      include: {
+        items: true,
+        cashier: { select: { id: true, name: true, username: true } },
+      },
+    });
+
+    // Log activity
+    await prisma.activityLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'SAVE_DRAFT',
+        details: `Saved draft transaction ${draft.receiptNumber} - Total: ${total}`,
+      },
+    });
+
+    console.log(`[Backend] Draft saved: ${draft.receiptNumber} by user ${req.user.id}`);
+    res.status(201).json(draft);
+  } catch (error) {
+    console.error('Save draft error:', error);
+    res.status(500).json({ error: 'Failed to save draft transaction.' });
+  }
+});
+
+// Delete a draft transaction (cleanup after completing or cancelling a draft)
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const id = parseInt(req.params.id);
+
+    const transaction = await prisma.transaction.findUnique({ where: { id } });
+    if (!transaction) return res.status(404).json({ error: 'Transaction not found.' });
+
+    // Only allow deleting drafts or pending_mpesa
+    if (transaction.status !== 'draft' && transaction.status !== 'pending_mpesa') {
+      return res.status(400).json({ error: 'Only draft or pending transactions can be deleted.' });
+    }
+
+    // Cascade delete will remove items automatically
+    await prisma.transaction.delete({ where: { id } });
+
+    await prisma.activityLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'DELETE_DRAFT',
+        details: `Deleted draft transaction ${transaction.receiptNumber}`,
+      },
+    });
+
+    res.json({ message: 'Draft deleted.' });
+  } catch (error) {
+    console.error('Delete draft error:', error);
+    res.status(500).json({ error: 'Failed to delete draft.' });
   }
 });
 

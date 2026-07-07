@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { categoriesAPI } from '../services/api';
 import toast from 'react-hot-toast';
+import ConfirmDialog from "../components/ConfirmDialog";
 
 export default function Categories() {
   const [categories, setCategories] = useState([]);
@@ -8,6 +9,7 @@ export default function Categories() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: '', description: '' });
+  const [deleteConfirm, setDeleteConfirm] = useState({ open: false, category: null });
 
   const fetchCategories = async () => {
     try {
@@ -48,8 +50,14 @@ export default function Categories() {
     }
   };
 
-  const handleDelete = async (cat) => {
-    if (!window.confirm(`Delete "${cat.name}"?`)) return;
+  const handleDeleteClick = (cat) => {
+    setDeleteConfirm({ open: true, category: cat });
+  };
+
+  const handleDeleteConfirm = async () => {
+    const cat = deleteConfirm.category;
+    if (!cat) return;
+    setDeleteConfirm({ open: false, category: null });
     try {
       await categoriesAPI.delete(cat.id);
       toast.success('Category deleted');
@@ -57,6 +65,10 @@ export default function Categories() {
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to delete category');
     }
+  };
+
+  const handleDeleteCancel = () => {
+    setDeleteConfirm({ open: false, category: null });
   };
 
   return (
@@ -82,13 +94,26 @@ export default function Categories() {
                 <p className="text-xs text-gray-400 mt-2">{cat._count?.products || 0} products</p>
               </div>
               <div className="flex gap-2">
-                <button onClick={() => openEdit(cat)} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="Edit">✏️</button>
-                <button onClick={() => handleDelete(cat)} className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded" title="Delete">🗑️</button>
+                <button onClick={() => openEdit(cat)} className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded" title="Edit">
+                  <img src="./icons/edit-icon.png" alt="Edit" className="w-5 h-5" />
+                </button>
+                <button onClick={() => handleDeleteClick(cat)} className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded" title="Delete">
+                  <img src="./icons/delete-icon.png" alt="Delete" className="w-5 h-5" />
+                </button>
               </div>
             </div>
           </div>
-        ))}
-      </div>
+        )      )}
+    </div>
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        open={deleteConfirm.open}
+        title="Delete Category"
+        message={`Delete "${deleteConfirm.category?.name}"? This cannot be undone.`}
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+      />
 
       {showModal && (
         <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" onClick={() => setShowModal(false)}>

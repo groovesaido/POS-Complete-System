@@ -21,6 +21,7 @@
     "assets": [
       "prisma/**/*",
       "src/**/*",
+      "uploads/**/*",
       "node_modules/.prisma/**/*",
       "node_modules/@prisma/client/**/*"
     ],

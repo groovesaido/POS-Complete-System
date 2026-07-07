@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { productsAPI, categoriesAPI, getUploadUrl } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
 import useMobileScanner from "../hooks/useMobileScanner";
 import toast from "react-hot-toast";
-import ConfirmDialog from "../components/ConfirmDialog";
 
 export default function Products() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -32,13 +33,6 @@ export default function Products() {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
-  const [stockModal, setStockModal] = useState({
-    open: false,
-    product: null,
-    quantity: "",
-  });
-  const [addingStock, setAddingStock] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState({ open: false, product: null });
   const [scanFlash, setScanFlash] = useState(false); // green flash on successful scan
   const [barcodeFlash, setBarcodeFlash] = useState(false); // flash for modal barcode field
 
@@ -310,50 +304,7 @@ export default function Products() {
     }
   };
 
-  const handleDeleteClick = (product) => {
-    setDeleteConfirm({ open: true, product });
-  };
-
-  const handleDeleteConfirm = async () => {
-    const product = deleteConfirm.product;
-    if (!product) return;
-    setDeleteConfirm({ open: false, product: null });
-    try {
-      await productsAPI.delete(product.id);
-      toast.success("Product deleted");
-      await fetchProducts();
-      // Restore focus to search input after deletion
-      searchRef.current?.focus();
-    } catch (err) {
-      const msg = err.response?.data?.error || "Failed to delete product";
-      toast.error(msg);
-      // Restore focus even on error
-      searchRef.current?.focus();
-    }
-  };
-
-  const handleDeleteCancel = () => {
-    setDeleteConfirm({ open: false, product: null });
-  };
-
-  const handleAddStock = async () => {
-    const { product, quantity } = stockModal;
-    if (!quantity || parseInt(quantity) <= 0) {
-      toast.error("Please enter a valid quantity.");
-      return;
-    }
-    setAddingStock(true);
-    try {
-      await productsAPI.addStock(product.id, { quantity: parseInt(quantity) });
-      toast.success(`Added ${quantity} units to ${product.name}`);
-      setStockModal({ open: false, product: null, quantity: "" });
-      fetchProducts();
-    } catch (err) {
-      toast.error(err.response?.data?.error || "Failed to add stock");
-    } finally {
-      setAddingStock(false);
-    }
-  };
+  // No delete/stock handlers needed on list page — done on detail page
 
   // Sort products: out of stock first, then low stock, then in stock
   const sortedProducts = useMemo(() => {
@@ -449,9 +400,6 @@ export default function Products() {
                 <th className="text-right py-3 px-4 font-medium">Wholesale</th>
                 <th className="text-right py-3 px-4 font-medium">Qty</th>
                 <th className="text-center py-3 px-4 font-medium">Status</th>
-                {user?.role === "admin" && (
-                  <th className="text-center py-3 px-4 font-medium">Actions</th>
-                )}
               </tr>
             </thead>
             <tbody>
@@ -477,7 +425,8 @@ export default function Products() {
                 sortedProducts.map((product) => (
                   <tr
                     key={product.id}
-                    className={`border-t border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/50 ${product.quantity <= product.reorderLevel ? 'bg-red-50 dark:bg-red-900/10' : ''}`}
+                    onClick={() => navigate(`/products/${product.id}`)}
+                    className={`border-t border-gray-100 dark:border-gray-700/50 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors ${product.quantity <= product.reorderLevel ? 'bg-red-50 dark:bg-red-900/10' : ''}`}
                   >
                     <td className="py-3 px-4">
                       <div className="w-10 h-10 rounded-lg bg-gray-100 dark:bg-gray-700 overflow-hidden flex items-center justify-center">
@@ -517,39 +466,6 @@ export default function Products() {
                     <td className="py-3 px-4 text-center">
                       {getStockBadge(product)}
                     </td>
-                    {user?.role === "admin" && (
-                      <td className="py-3 px-4">
-                        <div className="flex justify-center gap-2">
-                          <button
-                            onClick={() =>
-                              setStockModal({
-                                open: true,
-                                product,
-                                quantity: "",
-                              })
-                            }
-                            className="p-1.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 rounded"
-                            title="Add Stock"
-                          >
-                            📦
-                          </button>
-                          <button
-                            onClick={() => openEdit(product)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded"
-                            title="Edit"
-                          >
-                            ✏️
-                          </button>
-                          <button
-                            onClick={() => handleDeleteClick(product)}
-                            className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
-                            title="Delete"
-                          >
-                            🗑️
-                          </button>
-                        </div>
-                      </td>
-                    )}
                   </tr>
                 ))
               )}
@@ -666,85 +582,6 @@ export default function Products() {
           📱
         </button>
       </div>
-
-      {/* Delete Confirmation Dialog */}
-      <ConfirmDialog
-        open={deleteConfirm.open}
-        title="Delete Product"
-        message={`Delete "${deleteConfirm.product?.name}"? This cannot be undone.`}
-        onConfirm={handleDeleteConfirm}
-        onCancel={handleDeleteCancel}
-      />
-
-      {/* Add Stock Modal */}
-      {stockModal.open && (
-        <div
-          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
-          onClick={() => setStockModal({ ...stockModal, open: false })}
-        >
-          <div
-            className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-sm shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="text-lg font-bold mb-1">Add Stock</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-              Adding stock to{" "}
-              <span className="font-medium text-gray-700 dark:text-gray-300">
-                {stockModal.product?.name}
-              </span>
-            </p>
-            <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
-              Current stock:{" "}
-              <span className="font-semibold">
-                {stockModal.product?.quantity}
-              </span>
-            </p>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleAddStock();
-              }}
-              className="space-y-4"
-            >
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Quantity to Add *
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  required
-                  autoFocus
-                  value={stockModal.quantity}
-                  onChange={(e) =>
-                    setStockModal({ ...stockModal, quantity: e.target.value })
-                  }
-                  placeholder="Enter quantity..."
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-              <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setStockModal({ open: false, product: null, quantity: "" })
-                  }
-                  className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={addingStock}
-                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
-                >
-                  {addingStock ? "Adding..." : "➕ Add Stock"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Product Modal */}
       {showModal && (
